@@ -85,6 +85,92 @@ def init_llm():
     print("[ERROR] 未找到 gcp-key.json，且未在 .env 中設定 DEEPSEEK_API_KEY, GEMINI_API_KEY 或 OPENAI_API_KEY")
     sys.exit(1)
 
+def semantic_clustering(articles_brief, existing_tags, count):
+    """呼叫 LLM 進行跨文章的語意聚類，找出適合撰寫深度專題文章的【多文獻合成主題】"""
+    prompt = f"""
+    以下是從知識庫中撈出的已處理文章列表（共 {{len(articles_brief)}} 篇）：
+    {{json.dumps(articles_brief, ensure_ascii=False)}}
+
+    已存在的專題主題包括：{{json.dumps(list(existing_tags), ensure_ascii=False)}}。
+    請避開這些方向，對剩下的文章進行「跨文獻語意聚類」，找出全新且適合撰寫深度專題文章的【多文獻合成主題】。
+
+    每個主題必須滿足以下條件：
+    1. 每個主題必須至少包含 2 篇或 3 篇以上的相關文章，以實現跨文獻的交叉論證與知識融合。絕不能只放 1 篇文章。
+    2. 每個主題應有一個明確且具吸引力的專案研究主題名稱。
+    3. 每個主題中，請明確指定哪些是「核心文獻」（最多 3 篇）與哪些是「輔助參考文獻」（提供摘要）。
+
+    請回傳一個 JSON 格式的列表，格式如下：
+    [
+      {{
+        "theme": "主題名稱（例如：AI 輔助軟體開發的雙面刃與風險治理）",
+        "rationale": "為什麼要彙整這個主題的簡短說明",
+        "core_article_ids": ["文章ID_A", "文章ID_B"],
+        "helper_article_ids": ["文章ID_C"]
+      }}
+    ]
+
+    請只回傳 strict JSON，不要用 ```json 包覆。
+    """
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if engine_name == "deepseek":
+                response = openai_client.chat.completions.create(
+                    model="deepseek-chat",
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": "You are a professional knowledge curator. You perform semantic clustering and output strict JSON in Traditional Chinese."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                res_text = response.choices[0].message.content
+            elif engine_name == "gemini":
+                try:
+                    response = gemini_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt,
+                        config={"response_mime_type": "application/json"}
+                    )
+                    res_text = response.text
+                except Exception as e:
+                    print(f"    [WARN] 使用 Gemini JSON 模式失敗，嘗試一般模式: {{e}}")
+                    response = gemini_client.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    )
+                    res_text = response.text
+            else:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    response_format={"type": "json_object"},
+                    messages=[
+                        {"role": "system", "content": "You are a professional knowledge curator. You perform semantic clustering and output strict JSON in Traditional Chinese."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                res_text = response.choices[0].message.content
+                
+            res_text = res_text.strip()
+            if res_text.startswith("```"):
+                res_text = re.sub(r'^```(?:json)?\n', '', res_text)
+                res_text = re.sub(r'\n```$', '', res_text)
+                res_text = res_text.strip()
+                
+            data = json.loads(res_text)
+            if isinstance(data, dict) and "themes" in data:
+                return data["themes"]
+            elif isinstance(data, list):
+                return data
+            else:
+                return [data]
+        except Exception as e:
+            print(f"  [WARN] 語意聚類 LLM 呼叫失敗 (嘗試 {{attempt+1}}/{{max_retries}}): {{e}}，將在 5 秒後重試...")
+            time.sleep(5)
+            
+    print("  [ERROR] 語意聚類呼叫失敗，已達最大重試次數。")
+    return []
+
 def get_page_content(notion, page_id):
     """讀取 Notion 頁面內部的完整文字區塊（第一層）"""
     try:
@@ -825,6 +911,8 @@ def main():
     # 2. 建立標籤對應表 (tag -> list of pages)
     tag_map = {}
     all_raw_tags = set()
+    articles_by_id = {}
+    articles_brief = []
     for page in pages:
         title = get_page_title(page)
         url = get_page_url_property(page)
@@ -885,6 +973,29 @@ def main():
                     "inspiration": inspiration,
                     "rag_score": rag_score
                 })
+        
+        # 儲存到 articles_by_id 與 articles_brief 供語意聚類 fallback 使用
+        art_info = {
+            "id": page["id"],
+            "title": title,
+            "url": url,
+            "summary": summary,
+            "created_time": created_time,
+            "is_inspired": is_inspired,
+            "credibility": credibility,
+            "actionability": actionability,
+            "inspiration": inspiration,
+            "rag_score": rag_score
+        }
+        articles_by_id[page["id"]] = art_info
+        
+        simple_tags = [t.get("name") for t in tags if t.get("name")]
+        articles_brief.append({
+            "id": page["id"],
+            "title": title,
+            "tags": simple_tags,
+            "summary": summary
+        })
                 
     # 3. 標籤清洗與去重 (Tag De-duplication)
     print("\n[INFO] 正在進行標籤清理與去重...")
@@ -941,66 +1052,92 @@ def main():
         "自動化", "ai自動化", "ai 自動化", "生產力", "生產力工具", "高效工作", "效率提升"
     }
     
+    # 優先篩選出至少有 3 篇文章以上的標準標籤（提供豐富的跨文獻彙整）
     eligible_tags = {}
     for tag, arts in standard_tag_map.items():
         if tag.lower() in BROAD_TAGS_BLACKLIST:
             continue
-        # 精準增量去重：如果已有該主題的彙整文章則跳過
         if tag.strip().lower() in existing_tags:
             continue
-        if len(arts) >= 2:
+        if len(arts) >= 3:
             eligible_tags[tag] = arts
             
-    # 如果 eligible_tags 太少，則降級為大於等於 1 篇的標籤，且同樣過濾黑名單與重複
-    if len(eligible_tags) < 3:
+    # 如果符合 3 篇以上的主題太少，則降級為大於等於 2 篇的主題
+    if len(eligible_tags) < args.count:
         eligible_tags = {}
         for tag, arts in standard_tag_map.items():
             if tag.lower() in BROAD_TAGS_BLACKLIST:
                 continue
             if tag.strip().lower() in existing_tags:
                 continue
-            if len(arts) >= 1:
+            if len(arts) >= 2:
                 eligible_tags[tag] = arts
-        
-    if not eligible_tags:
-        print("[ERROR] 沒有找到足夠的文章與標籤來進行彙整。")
-        sys.exit(1)
-        
-    print(f"[INFO] 可用於彙整的主題標籤數量: {len(eligible_tags)} 個。")
+                
+    themes_to_process = []
     
-    # 4. 優先抽取包含了「深受啟發」文章的主題，其餘主題隨機補充
-    inspired_tags = []
-    other_tags = []
-    for tag, arts in eligible_tags.items():
-        if any(art.get("is_inspired", False) for art in arts):
-            inspired_tags.append(tag)
-        else:
-            other_tags.append(tag)
+    if len(eligible_tags) >= args.count:
+        print(f"[INFO] 成功在 Notion 標籤中找到 {len(eligible_tags)} 個可用主題，將使用標籤分組模式。")
+        # 4. 優先抽取包含了「深受啟發」文章的主題，其餘主題隨機補充
+        inspired_tags = []
+        other_tags = []
+        for tag, arts in eligible_tags.items():
+            if any(art.get("is_inspired", False) for art in arts):
+                inspired_tags.append(tag)
+            else:
+                other_tags.append(tag)
+                
+        random.shuffle(inspired_tags)
+        random.shuffle(other_tags)
+        
+        selected_tags = []
+        selected_tags.extend(inspired_tags[:args.count])
+        remaining_need = args.count - len(selected_tags)
+        if remaining_need > 0:
+            selected_tags.extend(other_tags[:remaining_need])
             
-    random.shuffle(inspired_tags)
-    random.shuffle(other_tags)
-    
-    selected_tags = []
-    selected_tags.extend(inspired_tags[:args.count])
-    remaining_need = args.count - len(selected_tags)
-    if remaining_need > 0:
-        selected_tags.extend(other_tags[:remaining_need])
+        print(f"[INFO] 優先挑選有「深受啟發」文章的主題後，選定的 {len(selected_tags)} 個標準主題為: {', '.join(selected_tags)}")
         
-    print(f"[INFO] 優先挑選有「深受啟發」文章的主題後，選定的 {len(selected_tags)} 個標準主題為: {', '.join(selected_tags)}")
-    
+        for tag in selected_tags:
+            articles = eligible_tags[tag]
+            # 排序：依據加權 RAG 分數 (rag_score) 降序排序，同分時依建立時間降序排序，選出前 3 篇作為核心文獻
+            articles.sort(key=lambda x: (x.get("rag_score", 5.0), x.get("created_time", "") or ""), reverse=True)
+            core_candidates_raw = articles[:3]
+            core_ids = {c["id"] for c in core_candidates_raw}
+            other_articles_raw = [a for a in articles if a["id"] not in core_ids]
+            themes_to_process.append({
+                "tag": tag,
+                "core_candidates": core_candidates_raw,
+                "other_articles": other_articles_raw
+            })
+    else:
+        print(f"\n[INFO] 基於 Notion 標籤的主題篩選僅獲得 {len(eligible_tags)} 個主題，不足要求的 {args.count} 個。")
+        print("[INFO] 自動啟動「跨文章語意聚類 fallback 機制」進行精準融合...")
+        
+        clustered_themes = semantic_clustering(articles_brief, existing_tags, args.count)
+        if not clustered_themes:
+            print("[ERROR] 語意聚類未回傳任何主題，且標籤分組主題不足，無法進行彙整。")
+            sys.exit(1)
+            
+        selected_themes = clustered_themes[:args.count]
+        print(f"[INFO] 語意聚類已選定 {len(selected_themes)} 個專題主題：")
+        for idx, t in enumerate(selected_themes, 1):
+            print(f"  {idx}. {t.get('theme')} (包含核心文獻 {len(t.get('core_article_ids', []))} 篇，輔助 {len(t.get('helper_article_ids', []))} 篇)")
+            
+        for t in selected_themes:
+            core_candidates_raw = [articles_by_id[cid] for cid in t["core_article_ids"] if cid in articles_by_id]
+            other_articles_raw = [articles_by_id[hid] for hid in t.get("helper_article_ids", []) if hid in articles_by_id]
+            themes_to_process.append({
+                "tag": t["theme"],
+                "core_candidates": core_candidates_raw,
+                "other_articles": other_articles_raw
+            })
+            
     # 5. 針對每個主題進行彙整並寫入新資料庫
     task_db_id = os.getenv("NOTION_TASK_DATABASE_ID")
-    for tag in selected_tags:
-        articles = eligible_tags[tag]
-        print(f"\n[+] 正在處理主題『{tag}』(包含 {len(articles)} 篇參考文獻)...")
-        
-        # A. 排序：依據加權 RAG 分數 (rag_score) 降序排序，同分時依建立時間降序排序，選出前 3 篇作為核心文獻
-        articles.sort(key=lambda x: (x.get("rag_score", 5.0), x.get("created_time", "") or ""), reverse=True)
-        core_candidates = articles[:3]
-        core_ids = {c["id"] for c in core_candidates}
-        
-        # 排除已選為核心的文獻，剩下的是其他非核心文獻，避免重複傳遞與重複引用
-        other_articles = [a for a in articles if a["id"] not in core_ids]
+    for item in themes_to_process:
+        tag = item["tag"]
+        core_candidates = item["core_candidates"]
+        other_articles = item["other_articles"]
         
         # B. 混合式 RAG：讀取核心文獻的 Notion 頁面完整文字內容
         core_articles_content = []
