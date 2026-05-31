@@ -128,12 +128,16 @@ def ask_llm(engine, title, content, url=""):
     請以繁體中文回傳一個 JSON 物件，格式如下：
     {{
       "summary": "【一句話摘要】\\n【3個核心知識點】\\n- 知識點 1...\\n- 知識點 2...\\n- 知識點 3...",
-      "tags": ["標籤1", "標籤2", "標籤3"]
+      "tags": ["標籤1", "標籤2", "標籤3"],
+      "credibility": 8,
+      "actionability": 7
     }}
     
     規則：
     1. tags 陣列最多 3 個標籤，每個標籤長度不超過 15 個字，不可包含逗號。
     2. summary 必須精簡且具實用價值，直接點出文章核心。
+    3. credibility (可信度) 代表該文章的客觀真實與學術可靠程度 (整數 1 至 10 分)。例如：官方文檔、知名研究或代碼實測為 8-10 分；論壇貼文或主觀雞湯文為 1-4 分。
+    4. actionability (可執行性) 代表該文章是否提供清晰、可落地的具體步驟、代碼或流程指引 (整數 1 至 10 分)。有具體實踐指引者為 7-10 分；純概念探討或觀點性文章為 1-4 分。
     """
     
     max_retries = 5
@@ -203,7 +207,7 @@ def ask_llm(engine, title, content, url=""):
     print("  [ERROR] 已達最大重試次數，LLM 呼叫宣告失敗。")
     return None
 
-def update_notion_properties(notion, page_id, summary, tags):
+def update_notion_properties(notion, page_id, summary, tags, credibility=None, actionability=None):
     """更新 Notion 頁面的 AI 摘要、AI 標籤與 AI 已處理狀態，支援屬性名稱自動對齊與優雅降級"""
     # 限制並清理標籤，確保符合 Notion 限制
     sanitized_tags = []
@@ -220,6 +224,8 @@ def update_notion_properties(notion, page_id, summary, tags):
         # 2. 確定可用的屬性名稱
         processed_field = "AI 已處理" if "AI 已處理" in props else None
         summary_field = "AI 摘要" if "AI 摘要" in props else None
+        credibility_field = "可信度" if "可信度" in props else None
+        actionability_field = "可執行性" if "可執行性" in props else None
         
         # 標籤欄位對齊優先序：'AI 標籤' -> 'Tag' -> 空字串 ''
         tag_field = None
@@ -251,8 +257,14 @@ def update_notion_properties(notion, page_id, summary, tags):
                 "multi_select": sanitized_tags
             }
             
+        if credibility_field and credibility is not None:
+            update_payload[credibility_field] = {"number": credibility}
+            
+        if actionability_field and actionability is not None:
+            update_payload[actionability_field] = {"number": actionability}
+            
         if not update_payload:
-            print("  [WARN] 找不到任何可供寫入的屬性欄位 ('AI 已處理', 'AI 摘要', 'AI 標籤', 'Tag')。")
+            print("  [WARN] 找不到任何可供寫入的屬性欄位 ('AI 已處理', 'AI 摘要', 'AI 標籤', '可信度', '可執行性')。")
             return False
             
         notion.pages.update(
@@ -402,7 +414,7 @@ def main():
                 content = f"此頁面無內文，請根據標題『{title}』與網址『{url}』提煉相關學科領域的預期知識。"
 
             # 2. 呼叫 LLM 提煉
-            print(f"  [+] 正在呼叫 {engine.upper()} 提煉知識與標籤...")
+            print(f"  [+] 正在呼叫 {engine.upper()} 提煉知識、評分與標籤...")
             result = ask_llm(engine, title, content, url)
             
             if not result or "summary" not in result or "tags" not in result:
@@ -411,14 +423,17 @@ def main():
                 
             summary = result["summary"]
             tags = result["tags"]
+            credibility = result.get("credibility")
+            actionability = result.get("actionability")
             
             print("  [+] 提煉結果預覽：")
             print(f"    [標籤] {', '.join(tags)}")
+            print(f"    [可信度] {credibility if credibility is not None else '無'} | [可執行性] {actionability if actionability is not None else '無'}")
             print(f"    [摘要] {summary.replace(chr(10), ' ')}")
 
             # 3. 寫回 Notion
             print("  [+] 正在更新 Notion 屬性並標記為已處理...")
-            success = update_notion_properties(notion, page_id, summary, tags)
+            success = update_notion_properties(notion, page_id, summary, tags, credibility, actionability)
             
             if success:
                 print("  [OK] 處理成功！")

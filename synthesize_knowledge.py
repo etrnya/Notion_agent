@@ -6,6 +6,7 @@ import json
 import time
 import argparse
 import io
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from notion_client import Client
 from notion_client.errors import APIResponseError
@@ -159,8 +160,8 @@ def normalize_tags(all_tags):
     print("  [WARN] 標籤清洗失敗，使用原始標籤作為備份。")
     return {tag: [tag] for tag in all_tags}
 
-def ask_llm(tag, articles, core_articles_content):
-    """混合式 RAG：利用核心文章全文與其他文章摘要，融會貫通合成一篇專題知識文章，支援嚴格引用標註"""
+def ask_llm(tag, articles, core_articles_content, devils_advocate_critique=""):
+    """混合式 RAG：利用核心文章全文與其他文章摘要，融會貫通合成一篇專題知識文章，支援嚴格引用標註與惡魔代言人思辨"""
     
     # 建立一個文獻編號映射，方便 LLM 引用
     all_citations = []
@@ -198,8 +199,12 @@ def ask_llm(tag, articles, core_articles_content):
             prompt += f"摘要內容：{cit['summary']}\n"
         prompt += "-" * 40 + "\n"
         
+    if devils_advocate_critique:
+        prompt += "=== 惡魔代言人批判與反向觀點 ===\n"
+        prompt += devils_advocate_critique + "\n\n"
+        
     prompt += """
-請以繁體中文撰寫，並格式化為乾淨的 Markdown 格式，且必須嚴格遵守以下「學術級引用規範」：
+請以繁體中文撰寫，並格式化為乾淨的 Markdown 格式，且必須嚴格遵守以下學術與思辨規範：
 
 1. 主標題格式：請根據您彙整後的文章實際核心內容，擬定一個專業、具備吸引力且與內容高度契合的中文標題，格式為：`## [自訂標題]`。例如 `## 打造高效團隊：n8n 流程自動化與專案治理實踐`。
 2. 前言：說明這個主題在現代數位/工作場景中的價值與演進脈絡。
@@ -207,8 +212,15 @@ def ask_llm(tag, articles, core_articles_content):
    - 整合文獻的精髓，整理出 2-3 個深入的觀點，並以標題與段落詳細展開。
    - 【硬性要求】：在撰寫的每一個觀點、技術描述或陳述句後面，必須在其段落或句子結尾標註其出處的文獻編號（例如：`...此技術能顯著提升工作效率 [1]。` 或是 `...在 2026 年的應用中更趨於成熟 [3, 5]。`）。
    - 請根據文獻的發表年份（例如：[2025]、[2026]），在撰寫核心觀點時展現出「時間演進」的技術發展脈絡，避免時空錯置。
-4. 實踐與行動建議：給出 2-3 個具體可操作的建議或工具應用方式，並同樣必須標註參考的文獻編號。
-5. 參考文獻列表：
+4. 【硬性要求】反向觀點與不適用情境：
+   - 必須包含一個大標題 `#### 反向觀點與不適用情境`。
+   - 整合上述提供之惡魔代言人批判，深入探討此主題/技術的侷限性、業界失敗案例，以及在什麼特定情境下絕對不該採用，讓專題文章具備客觀辯證與風險防範價值。
+5. 實踐與下一步行動計畫：
+   - 必須包含一個大標題 `#### 下一步行動計畫 (Action Items)`。
+   - 提供 2-3 個具體、可落地、可執行的下一步行動，並格式化為 Markdown 任務列表。例如：
+     - [ ] 行動指引 1 [1]
+     - [ ] 行動指引 2 [3]
+6. 參考文獻列表：
    - 在文章末尾列出「參考文獻」標題。
    - 【硬性要求】：只列出您在文章中「實際標註引用」過的文獻。如果某篇文獻在正文中沒有被 `[編號]` 引用，則絕對不能出現在參考文獻列表中。
    - 格式必須為：- `[文獻編號] [文章標題](原始連結)`。例如：`- [1] [AI開發新趨勢](https://example.com)`。如果原始連結為「無」，請寫成 `- [1] [AI開發新趨勢](無連結)`。
@@ -250,6 +262,190 @@ def ask_llm(tag, articles, core_articles_content):
             
     print("  [ERROR] LLM 呼叫失敗，已達最大重試次數。")
     return None
+
+def ask_devils_advocate(tag, core_articles_content, other_articles):
+    """扮演惡魔代言人，對該主題的主流觀點提出質疑、反向思考、失敗案例及不適用情境"""
+    prompt = f"""
+    你是一位極度挑剔、擅長批判思考與規避風險的「惡魔代言人（Devil's Advocate）」。
+    針對主題『{tag}』，主流的參考文獻內容如下：
+    
+    """
+    
+    # 加入文獻內容摘要
+    for idx, art in enumerate(core_articles_content, 1):
+        prompt += f"【文獻 {idx}】標題：{art['title']}\n"
+        prompt += f"內文片段：{art['content'][:1500]}\n\n"
+        
+    for idx, art in enumerate(other_articles, len(core_articles_content)+1):
+        prompt += f"【文獻 {idx}】標題：{art['title']}\n"
+        prompt += f"摘要：{art['summary']}\n\n"
+        
+    prompt += """
+    請針對上述文獻提倡的方法、技術 or 觀點，進行深度反思與批判，並回傳以下三個部分的繁體中文分析：
+    
+    1. 反對該思維/技術的主流質疑或反向觀點 (至少 2 點)。
+    2. 業界可能發生的經典失敗案例或落地痛點 (例如過度工程化、學習曲線陡峭、維護成本高等)。
+    3. 什麼特定條件或情境下「絕對不該使用」此方法或技術 (不適用情境)。
+    
+    請以 Markdown 格式輸出，直接回傳正文，不要用 ```markdown 標籤包覆，也不要有任何無關的開頭或結尾問候。
+    """
+    
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if engine_name == "deepseek":
+                response = openai_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "You are a critical thinker and risk assessment expert. Output Traditional Chinese."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                return response.choices[0].message.content
+            elif engine_name == "gemini":
+                response = gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt
+                )
+                return response.text
+            else:
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "You are a critical thinker and risk assessment expert. Output Traditional Chinese."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                return response.choices[0].message.content
+        except Exception as e:
+            print(f"  [WARN] 惡魔代言人 LLM 呼叫失敗: {e}，將在 3 秒後重試...")
+            time.sleep(3)
+            
+    return "無法生成反向觀點。"
+
+def extract_action_items(markdown_text):
+    """從 Markdown 中提取下一步行動計畫清單"""
+    action_items = []
+    lines = markdown_text.split('\n')
+    in_action_section = False
+    for line in lines:
+        line_strip = line.strip()
+        # 尋找行動計畫區塊
+        if "下一步行動" in line_strip or "Action Items" in line_strip or "行動計畫" in line_strip:
+            in_action_section = True
+            continue
+        if in_action_section:
+            # 碰到了其他標題，且已經有收集到東西，則退出
+            if line_strip.startswith('#'):
+                if action_items:
+                    break
+                continue
+            # 匹配 - [ ] 任務名稱 或 - [x] 任務名稱 或 - 任務名稱
+            match = re.match(r'^[-*]\s*(?:\[\s*[xX\s]?\s*\])?\s*(.+)$', line_strip)
+            if match:
+                item_content = match.group(1).strip()
+                # 剔除參考文獻的引用標註，如 [1] 或 [2, 3]
+                item_content = re.sub(r'\[\d+(?:\s*,\s*\d+)*\]', '', item_content).strip()
+                if item_content:
+                    action_items.append(item_content)
+    
+    # 備份：如果在 "下一步行動" 區間找不到，就在全文找 - [ ] 或 - [x]
+    if not action_items:
+        for line in lines:
+            line_strip = line.strip()
+            match = re.match(r'^[-*]\s*\[\s*[xX\s]?\s*\]\s*(.+)$', line_strip)
+            if match:
+                item_content = match.group(1).strip()
+                item_content = re.sub(r'\[\d+(?:\s*,\s*\d+)*\]', '', item_content).strip()
+                if item_content:
+                    action_items.append(item_content)
+                
+    return action_items
+
+def create_task_in_db(notion, task_db_id, task_name, source_page_id):
+    """在 Notion 任務資料庫中建立一筆 Task 紀錄，並關聯至來源專題頁面"""
+    try:
+        # 1. 撈取資料庫屬性以對齊欄位
+        db_info = notion.databases.retrieve(task_db_id)
+        props = db_info.get("properties", {})
+        
+        # 識別標題屬性名稱 (通常是 'Name' 或 '任務名稱' 或 'Title')
+        title_field = None
+        for name, prop in props.items():
+            if prop.get("type") == "title":
+                title_field = name
+                break
+                
+        # 識別 Relation 屬性名稱 (通常是 '來源專題' 或 'Source' 等)
+        relation_field = None
+        for name, prop in props.items():
+            if prop.get("type") == "relation":
+                relation_field = name
+                break
+                
+        # 識別 Status 或 Select 屬性 (用於設定待辦狀態)
+        status_field = None
+        status_value = None
+        for name, prop in props.items():
+            if prop.get("type") == "status":
+                status_field = name
+                status_value = {"name": "Not started"}
+                break
+            elif prop.get("type") == "select" and name in ["狀態", "Status", "執行狀態"]:
+                status_field = name
+                status_value = {"name": "待辦"}
+                break
+                
+        properties = {}
+        if title_field:
+            properties[title_field] = {
+                "title": [
+                    {
+                        "text": {
+                            "content": task_name
+                        }
+                    }
+                ]
+            }
+            
+        if relation_field and source_page_id:
+            properties[relation_field] = {
+                "relation": [
+                    {
+                        "id": source_page_id
+                    }
+                ]
+            }
+            
+        if status_field and status_value:
+            if props[status_field].get("type") == "status":
+                properties[status_field] = {"status": status_value}
+            else:
+                properties[status_field] = {"select": status_value}
+                
+        # 自動計算截止日期：1 週後
+        # 尋找截止日期欄位
+        date_field = None
+        for name, prop in props.items():
+            if prop.get("type") == "date" and name in ["截止日期", "Due Date", "Deadline"]:
+                date_field = name
+                break
+        if date_field:
+            due_date = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            properties[date_field] = {
+                "date": {
+                    "start": due_date
+                }
+            }
+            
+        notion.pages.create(
+            parent={"database_id": task_db_id},
+            properties=properties
+        )
+        return True
+    except Exception as e:
+        print(f"      [WARN] 寫入任務資料庫失敗: {e}")
+        return False
 
 def parse_rich_text(text):
     """解析 Markdown 的粗體、斜體、行內程式碼、連結與純網址，並轉換為 Notion 的 rich_text 格式"""
@@ -378,13 +574,12 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
     max_valid_num = len(all_citations)
     
     # 1. 修正正文中的超標引用編號（例如只給了5篇，LLM 卻寫了 [7]）
-    # 用正則匹配 [數字] 或 [數字, 數字]
     def replace_citation(match):
-        cit_str = match.group(0) # e.g. "[7]" or "[2, 5]"
+        cit_str = match.group(0)
         nums = [int(n) for n in re.findall(r'\d+', cit_str)]
         valid_nums = [n for n in nums if 1 <= n <= max_valid_num]
         if not valid_nums:
-            return "" # 無效編號直接移除
+            return ""
         return "[" + ", ".join(map(str, valid_nums)) + "]"
         
     fixed_text = re.sub(r'\[\d+(?:\s*,\s*\d+)*\]', replace_citation, markdown_text)
@@ -401,7 +596,6 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
             continue
             
         if in_references_section:
-            # 匹配 Markdown 連結 e.g. - [1] [標題](連結) 或是 - [標題](連結)
             link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', line)
             if link_match:
                 title = link_match.group(1).strip()
@@ -411,7 +605,7 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
                 is_valid = (url in valid_urls) or any(t in title for t in valid_titles)
                 if not is_valid:
                     print(f"      [GUARDRAIL] 剔除幻覺參考文獻: {title} (URL: {url})")
-                    continue # 剔除，不加入 cleaned_lines
+                    continue
             
         cleaned_lines.append(line)
         
@@ -427,10 +621,9 @@ def extract_summary_and_tags(markdown_text, tag):
             continue
         if line.startswith('#') or line.startswith('-') or line.startswith('*') or re.match(r'^\d+\.', line):
             continue
-        # 排除字數過短的行，如「前言：」、「引言」、「摘要」
+        # 排除字數過短的行
         if len(line) < 15 or line.replace("：", "").replace(":", "").strip() in ["前言", "引言", "摘要", "一、前言", "1. 前言"]:
             continue
-        # 找到第一個符合條件的段落
         summary = line
         break
         
@@ -662,6 +855,20 @@ def main():
         inspired_prop = page.get("properties", {}).get("深受啟發", {}).get("select")
         is_inspired = inspired_prop is not None and inspired_prop.get("name") == "深受啟發"
         
+        # 讀取可信度 (Number, 預設為 5)
+        cred_prop = page.get("properties", {}).get("可信度", {}).get("number")
+        credibility = cred_prop if cred_prop is not None else 5.0
+        
+        # 讀取可執行性 (Number, 預設為 5)
+        act_prop = page.get("properties", {}).get("可執行性", {}).get("number")
+        actionability = act_prop if act_prop is not None else 5.0
+        
+        # 主觀啟發分數：深受啟發為 10，否則為 5
+        inspiration = 10.0 if is_inspired else 5.0
+        
+        # 多維度加權排序 RAG Score 公式
+        rag_score = 0.4 * credibility + 0.3 * actionability + 0.3 * inspiration
+        
         for t in tags:
             tag_name = t.get("name")
             if tag_name:
@@ -672,12 +879,14 @@ def main():
                     "url": url,
                     "summary": summary,
                     "created_time": created_time,
-                    "is_inspired": is_inspired
+                    "is_inspired": is_inspired,
+                    "credibility": credibility,
+                    "actionability": actionability,
+                    "inspiration": inspiration,
+                    "rag_score": rag_score
                 })
                 
     # 3. 標籤清洗與去重 (Tag De-duplication)
-    # 我們不進行過度模糊的大範圍 LLM 聚類以防將無關文章硬塞入同一主題。
-    # 我們僅進行大小寫、空格的字面清理，保留資料庫中最真實的原始標籤分組。
     print("\n[INFO] 正在進行標籤清理與去重...")
     cleaned_tag_map = {}
     for raw_tag in all_raw_tags:
@@ -780,12 +989,13 @@ def main():
     print(f"[INFO] 優先挑選有「深受啟發」文章的主題後，選定的 {len(selected_tags)} 個標準主題為: {', '.join(selected_tags)}")
     
     # 5. 針對每個主題進行彙整並寫入新資料庫
+    task_db_id = os.getenv("NOTION_TASK_DATABASE_ID")
     for tag in selected_tags:
         articles = eligible_tags[tag]
         print(f"\n[+] 正在處理主題『{tag}』(包含 {len(articles)} 篇參考文獻)...")
         
-        # A. 排序：優先將「深受啟發」的文章排在最前面，同等情況下按建立時間降序排序，選出最新 3 篇作為核心文獻
-        articles.sort(key=lambda x: (x.get("is_inspired", False), x.get("created_time", "") or ""), reverse=True)
+        # A. 排序：依據加權 RAG 分數 (rag_score) 降序排序，同分時依建立時間降序排序，選出前 3 篇作為核心文獻
+        articles.sort(key=lambda x: (x.get("rag_score", 5.0), x.get("created_time", "") or ""), reverse=True)
         core_candidates = articles[:3]
         core_ids = {c["id"] for c in core_candidates}
         
@@ -795,7 +1005,7 @@ def main():
         # B. 混合式 RAG：讀取核心文獻的 Notion 頁面完整文字內容
         core_articles_content = []
         for idx, core in enumerate(core_candidates, 1):
-            print(f"    [+] 正在讀取核心文獻 [{idx}/{len(core_candidates)}] 全文: {core['title']}...")
+            print(f"    [+] 正在讀取核心文獻 [{idx}/{len(core_candidates)}] 全文: {core['title']} (RAG分數: {core['rag_score']:.1f})...")
             full_text = get_page_content(notion, core["id"])
             year = core["created_time"][:4] if core["created_time"] else "未知"
             core_articles_content.append({
@@ -809,9 +1019,13 @@ def main():
         # C. 將其他文章重排為時間升序（最早在前，最新在後）以利 LLM 呈現技術/觀點演進
         other_articles.sort(key=lambda x: x.get("created_time", ""))
         
+        # 呼叫惡魔代言人進行反向論點與風險分析
+        print(f"    [+] 正在呼叫 {engine_name.upper()} 扮演「惡魔代言人」進行批判思考與反向觀點分析...")
+        devils_advocate_critique = ask_devils_advocate(tag, core_articles_content, other_articles)
+        
         # D. 呼叫 LLM 進行混合 RAG 知識合成
-        print(f"    [+] 正在呼叫 {engine_name.upper()} 進行深度知識融會貫通...")
-        markdown_article = ask_llm(tag, other_articles, core_articles_content)
+        print(f"    [+] 正在呼叫 {engine_name.upper()} 進行深度知識融會貫通 (融合正反思辨)...")
+        markdown_article = ask_llm(tag, other_articles, core_articles_content, devils_advocate_critique)
         
         if not markdown_article:
             print("    [ERROR] 知識彙整失敗，跳過此主題。")
@@ -862,7 +1076,7 @@ def main():
             page_title = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', page_title)
         else:
             page_title = f"【知識專題】{tag} 的核心精髓與實踐指南"
-
+ 
         # F. 分頁寫入 Notion 資料庫
         print(f"    [+] 正在將專題文章『{page_title}』寫入目標資料庫...")
         try:
@@ -875,6 +1089,24 @@ def main():
                 blocks=blocks
             )
             print(f"    [OK] 成功建立並完整寫入專題頁面！頁面 ID: {page_id}")
+            
+            # 行動閉環：解析並建立 Task 寫入 Task DB
+            action_items = extract_action_items(markdown_article)
+            if action_items:
+                print(f"    [+] 解析出 {len(action_items)} 個行動項目，開始進行任務寫入閉環...")
+                if task_db_id:
+                    success_count = 0
+                    for item in action_items:
+                        if create_task_in_db(notion, task_db_id, item, page_id):
+                            success_count += 1
+                    print(f"    [OK] 成功將 {success_count}/{len(action_items)} 個行動任務寫入 Notion 任務資料庫！")
+                else:
+                    print("    [WARN] 未設定 NOTION_TASK_DATABASE_ID 環境變數，跳過任務寫入。解析到的行動項目為：")
+                    for item in action_items:
+                        print(f"      - {item}")
+            else:
+                print("    [INFO] 未在專題文章中解析出具體的下一步行動項目。")
+                
         except Exception as e:
             print(f"    [ERROR] 寫入目標資料庫失敗: {e}")
             
