@@ -400,9 +400,18 @@ def main():
         
         props = page.get("properties", {})
         
-        # 尋找新鮮度與驗證時間欄位
-        freshness_field = "知識新鮮度" if "知識新鮮度" in props else None
-        verification_field = "最後驗證時間" if "最後驗證時間" in props else None
+        # 尋找新鮮度與驗證時間欄位（相容可能的空格後綴）
+        freshness_field = None
+        for f in ["知識新鮮度", "知識新鮮度 "]:
+            if f in props:
+                freshness_field = f
+                break
+                
+        verification_field = None
+        for f in ["最後驗證時間", "最後驗證時間 "]:
+            if f in props:
+                verification_field = f
+                break
         
         freshness_val = ""
         if freshness_field:
