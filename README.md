@@ -11,23 +11,40 @@
 
 ## 🌟 核心功能說明
 
-### 1. 海量筆記自動摘要與 AI 自動打標籤 (Batch Processor)
+### 1. 海量筆記自動提煉與多維度評估打標籤 (Batch Processor)
 針對儲存數千筆網路文章、電子書、影片筆記的 Notion 原始資料庫進行增量批次提煉：
-* **增量防重**：自動撈取未處理的文章（`AI已處理` 未勾選），處理完後自動打勾，避免重複消耗 Token 與資料庫寫入。
+* **增量防重**：自動撈取未處理的文章（`AI已處理` 未勾選），處理完後自動打勾，避免重複消耗 Token。
 * **分欄結構化寫回**：
   * **【一句話摘要】**：自動寫入 Notion 的 **`AI摘要`** 欄位。
   * **【3個核心知識點】**：自動寫入 Notion 的 **`AI知識點`** 欄位。
+* **多維度評估評分**：
+  * 自動推估並寫入 **`可信度`** (客觀真實性 1-10 分) 與 **`可執行性`** (實踐指導性 1-10 分)，若資料庫未設定此屬性則自動安全降級，不影響流程。
 * **空白網址內容自動抓取**：對含有 Facebook 貼文等僅有 URL 但內容為空的卡片，提供自動擷取與標題修復功能，隨後完成 AI 打標與摘要。
 
-### 2. 生產級知識庫彙整生成專題文章 (Knowledge Synthesizer)
+### 2. 雙核心多主題 RAG 知識合成與思辨長文 (Knowledge Synthesizer)
 針對已經完成摘要與標籤化的 Notion 資料庫，自動進行跨多篇文章的主題歸納與融合：
+* **多維度加權 RAG 排序**：
+  * 計算公式：$\text{RAG Score} = 0.4 \times \text{可信度} + 0.3 \times \text{可執行性} + 0.3 \times \text{深受啟發(10分/5分)}$。
+  * 自動依分數降序排序，精準挑選最合適的 3 篇文獻讀取 Notion 頁面全文作為 RAG 核心 context。
+* **惡魔代言人 (Devil's Advocate) 機制**：
+  * 引入批判性 LLM，在彙整前針對主流觀點生成反對意見、落地痛點與失敗案例，並融入最終專題的 **`#### 反向觀點與不適用情境`** 區塊，防止回音室效應。
+* **行動與任務閉環**：
+  * 自動解析專題文章末尾的 **`#### 下一步行動計畫 (Action Items)`** Markdown 任務清單。
+  * 若設定了 **`NOTION_TASK_DATABASE_ID`**，系統會自動在任務資料庫中建立待辦任務（截止日期設為 7 天後），並利用 **Relation 屬性關聯** 回剛剛寫入的專題彙整頁面。
 * **標籤清洗與去重**：自動對原始大小寫、空白與重疊標籤進行清洗與語意對齊，剔除過於寬泛的大型標籤（如 `"AI工具"`、`"AI應用"`、`"自動化"` 等），保留高聚焦度的主題。
-* **「深受啟發」精華優先**：自動檢測標有「深受啟發」屬性的精華文章，並在抽選主題時**優先抽取含有精華文章的主題**，並在合成時**優先讀取精華文章的 Notion 頁面全文**作為 RAG 核心 context。
 * **完美 Markdown 格式排版優化**：
-  * **多級標題解析**：動態匹配 Markdown 的 `H1` 至 `H6` 標題，自動剔除 `#` 號並將 4~6 級標題安全映射為 Notion 支援的 `heading_3`，確保在 Notion 中字體正確變大。
-  * **文字樣式轉換**：正確解析 Markdown 的 **粗體 (`**`)**、*斜體 (`*`)* 及 ``行內程式碼`` 為 Notion Text Annotations，隱藏 markdown 標記並在頁面中實現乾淨的字體加粗。
-  * **超連結轉換**：自動捕獲標準 markdown 連結 `[文字](網址)` 與任何行內出現的**純網址 (HTTP/HTTPS)**，全部轉換為 Notion 中可一鍵點擊開啟的超連結。
-  * **引用關係 Guardrail**：二次校驗 LLM 生成的參考文獻列表，剔除憑空捏造的幻覺文獻，且僅保留正文中有實際被標註引用的來源，網址完美對齊。
+  * **多級標題解析**：動態匹配 Markdown 的 `H1` 至 `H6` 標題，自動將 4~6 級標題安全映射為 Notion 支援的 `heading_3`。
+  * **文字樣式與連結轉換**：正確解析 **粗體 (`**`)**、*斜體 (`*`)*、``行內程式碼`` 為 Notion 內建 Annotations，並將 markdown 連結與行內純網址 (HTTP/HTTPS) 轉換為一鍵可點擊的 Notion 內建連結。
+  * **引用關係 Guardrail**：二次校驗 LLM 生成的參考文獻列表，剔除憑空捏造的幻覺文獻，且僅保留正文中有實際被標註引用的來源。
+
+### 3. 知識生命週期自動化代謝與巡檢 (Freshness Checker)
+* **新鮮度評估**：
+  * 讀取 **`知識新鮮度`** (A級:長青/B級:一年/C級:半年/D級:三個月) 與 **`最後驗證時間`**。
+* **代謝運作**：
+  * 對於判定已過期的文章，探測網頁 URL 存活率，呼叫 LLM 評估該知識在目前 (2026年) 是否已過時淘汰。
+  * **代謝治理決策**：
+    * `KEEP`：內容依然有效，自動更新 **`最後驗證時間`** 為今天。
+    * `UPDATE` / `ARCHIVE`：需要更新或歸檔，自動在任務資料庫中建立一筆「知識庫代謝維護任務」，完成知識庫的新陳代謝。
 
 ---
 
@@ -85,6 +102,8 @@ pip install -r requirements.txt
 NOTION_API_KEY=ntn_your_notion_token_here
 GEMINI_API_KEY=your_gemini_api_key_here
 NOTION_DATABASE_ID=your_database_id_here
+# 選填：連動的 Notion 任務管理資料庫 ID
+NOTION_TASK_DATABASE_ID=your_task_database_id_here
 ```
 
 ---
@@ -93,8 +112,9 @@ NOTION_DATABASE_ID=your_database_id_here
 
 | 工作情境 (關鍵字) | 常用 CLI 指令 | 運作說明與最佳實踐 |
 | :--- | :--- | :--- |
-| **在網路文章影片筆記資料庫標上AI摘要和AI標籤** | `python batch_processor.py --limit <數量> --yes` | **增量 AI 提煉**：自動撈取未處理的文章，以 **Agent Platform** 提煉並分欄回寫摘要與標籤。 |
-| **在AI整理知識庫產生彙整性文章** | `python synthesize_knowledge.py --count <篇數>` | **生產級知識彙整**：排除寬泛標籤，優先挑選「深受啟發」精華文章做為 RAG 核心全文，寫入自訂主題彙整長文。 |
+| **在網路文章影片筆記資料庫標上AI摘要和AI標籤** | `python batch_processor.py --limit <數量> --yes` | **增量 AI 提煉**：自動撈取未處理的文章，以 **Agent Platform** 提煉並分欄回寫摘要、標籤、可信度與可執行性。 |
+| **在AI整理知識庫產生彙整性文章** | `python synthesize_knowledge.py --count <篇數>` | **生產級知識彙整**：排除寬泛標籤，優先以三維度加權 RAG 評分挑選核心文獻，融合惡魔代言人批判，並自動將下一步行動寫入 Task DB。 |
+| **知識新鮮度過期生命週期自動巡檢** | `python freshness_checker.py --yes` | **知識新鮮度巡檢**：自動探測過期筆記之 URL 存活率，使用 LLM 評估時效決策，更新驗證時間 (KEEP) 或在 Task DB 建立維護任務 (UPDATE/ARCHIVE)。 |
 | **空白/無標題 Facebook 頁面內容自動抓取補齊** | `python fix_empty_title_and_body_pages.py` | **空白頁面修復**：自動從資料庫中找出有 URL 但內容為空的卡片，抓取貼文並重構寫入。 |
 | **停用/啟用 GCP JSON 金鑰憑證** | 打開 `.env` 修改 `USE_VERTEX_AI` | `USE_VERTEX_AI=true` (優先啟動 GCP)；`USE_VERTEX_AI=false` (回退至一般 Key) |
 | **乾跑預覽 (不寫入 Notion)** | `python batch_processor.py --limit 5 --dry-run` | **乾跑模式 (Dry Run)**：僅進行資料撈取與提煉預覽。 |
