@@ -701,6 +701,30 @@ def main():
         if merged_articles:
             standard_tag_map[std_name] = merged_articles
             
+    # 撈取目標資料庫中已存在的專題文章的標籤以進行精準去重
+    print("\n[INFO] 正在撈取目標資料庫中已存在的專題文章以進行去重...")
+    existing_tags = set()
+    try:
+        search_results = notion.search(
+            filter={"property": "object", "value": "page"},
+            page_size=100
+        )
+        target_db_clean = args.dest_db.replace("-", "").lower()
+        for page in search_results.get("results", []):
+            p_id = page.get("parent", {}).get("database_id", "").replace("-", "").lower()
+            if p_id == target_db_clean:
+                props = page.get("properties", {})
+                
+                # 智慧撈取專題文章已有的「AI 標籤」屬性
+                tags_prop = props.get("AI 標籤", {}).get("multi_select", [])
+                for t in tags_prop:
+                    tag_name = t.get("name")
+                    if tag_name:
+                        existing_tags.add(tag_name.strip().lower())
+        print(f"[INFO] 目標資料庫中已存在 {len(existing_tags)} 個主題的專題文章，將排除以防重複。")
+    except Exception as e:
+        print(f"[WARN] 撈取目標資料庫已存在頁面失敗: {e}，將跳過增量去重防護。")
+
     # 篩選出至少有 2 篇文章以上的標準標籤，排除太過寬泛的大型標籤
     BROAD_TAGS_BLACKLIST = {
         "ai工具", "ai應用", "ai", "工具", "科技", "資訊", "未分類", "tag", "無標籤",
@@ -712,14 +736,19 @@ def main():
     for tag, arts in standard_tag_map.items():
         if tag.lower() in BROAD_TAGS_BLACKLIST:
             continue
+        # 精準增量去重：如果已有該主題的彙整文章則跳過
+        if tag.strip().lower() in existing_tags:
+            continue
         if len(arts) >= 2:
             eligible_tags[tag] = arts
             
-    # 如果 eligible_tags 太少，則降級為大於等於 1 篇的標籤，且同樣過濾黑名單
+    # 如果 eligible_tags 太少，則降級為大於等於 1 篇的標籤，且同樣過濾黑名單與重複
     if len(eligible_tags) < 3:
         eligible_tags = {}
         for tag, arts in standard_tag_map.items():
             if tag.lower() in BROAD_TAGS_BLACKLIST:
+                continue
+            if tag.strip().lower() in existing_tags:
                 continue
             if len(arts) >= 1:
                 eligible_tags[tag] = arts
