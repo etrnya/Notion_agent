@@ -695,7 +695,7 @@ def parse_rich_text(text):
     return rich_text
 
 def markdown_to_notion_blocks(markdown_text):
-    """將 Markdown 文字解析並轉換為 Notion 的區塊 (Blocks) 格式"""
+    """將 Markdown 文字解析並轉換為 Notion 的區塊 (Blocks) 格式，支援待辦清單"""
     blocks = []
     lines = markdown_text.split('\n')
     
@@ -717,7 +717,20 @@ def markdown_to_notion_blocks(markdown_text):
                     "rich_text": parse_rich_text(content)
                 }
             })
-        # 解析清單
+        # 解析待辦清單 (To-Do List Checkbox)
+        elif re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', line):
+            todo_match = re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', line)
+            checked = todo_match.group(1).lower() == 'x'
+            content = todo_match.group(2).strip()
+            blocks.append({
+                "object": "block",
+                "type": "to_do",
+                "to_do": {
+                    "rich_text": parse_rich_text(content),
+                    "checked": checked
+                }
+            })
+        # 解析一般無序清單
         elif line.startswith('- ') or line.startswith('* '):
             blocks.append({
                 "object": "block",
@@ -748,7 +761,7 @@ def markdown_to_notion_blocks(markdown_text):
     return blocks
 
 def filter_and_validate_markdown_citations(markdown_text, all_citations):
-    """使用 Python 對 LLM 回傳的 Markdown 進行引用的二次校驗，防止幻覺"""
+    """使用 Python 對 LLM 回傳的 Markdown 進行引用的二次校驗，並提取正文中的外部文獻"""
     max_valid_num = len(all_citations)
     
     # 1. 修正正文中的超標引用編號（例如只給了 3 篇，LLM 卻寫了 [資料庫文獻 5]）
@@ -760,7 +773,6 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
             return ""
         return "[資料庫文獻 " + ", ".join(map(str, valid_nums)) + "]"
         
-    # 匹配 [資料庫文獻 X] 格式
     fixed_text = re.sub(r'\[資料庫文獻\s*(\d+(?:\s*,\s*\d+)*)\]', replace_citation, markdown_text)
     
     # 同時相容舊的 [X] 格式，以防 LLM 仍然寫成 [1] 的格式
@@ -774,7 +786,35 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
         
     fixed_text = re.sub(r'\[(\d+(?:\s*,\s*\d+)*)\]', replace_old_citation, fixed_text)
     
-    # 2. 物理截斷：如果 LLM 自己生成了參考文獻區塊，直接將其完全切除，交由 Python 自動生成
+    # 2. 提取正文中的 [外部文獻: 標題](網址)
+    external_pattern = re.compile(r'\[外部文獻:\s*([^\]]+)\]\(((?:https?://)[^\s\)]+)\)')
+    external_citations = []
+    seen_urls = set()
+    
+    temp_num = max_valid_num + 1
+    
+    def match_external(match):
+        nonlocal temp_num
+        title = match.group(1).strip()
+        url = match.group(2).strip()
+        
+        if url not in seen_urls:
+            seen_urls.add(url)
+            external_citations.append({
+                "num": temp_num,
+                "title": title,
+                "url": url
+            })
+            curr_num = temp_num
+            temp_num += 1
+        else:
+            curr_num = next(ec["num"] for ec in external_citations if ec["url"] == url)
+            
+        return f"[外部文獻 {curr_num}]"
+        
+    fixed_text = external_pattern.sub(match_external, fixed_text)
+    
+    # 3. 物理截斷：如果 LLM 自己生成了參考文獻區塊，直接將其完全切除，交由 Python 自動生成
     lines = fixed_text.split('\n')
     cleaned_lines = []
     for line in lines:
@@ -782,36 +822,59 @@ def filter_and_validate_markdown_citations(markdown_text, all_citations):
             break
         cleaned_lines.append(line)
         
-    return '\n'.join(cleaned_lines).strip()
+    return '\n'.join(cleaned_lines).strip(), external_citations
 
-def extract_summary_and_tags(markdown_text, tag):
-    """從 Markdown 內容中提取第一段作為 AI摘要，並以主題作為 AI 標籤"""
-    lines = markdown_text.split('\n')
-    summary = ""
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if line.startswith('#') or line.startswith('-') or line.startswith('*') or re.match(r'^\d+\.', line):
-            continue
-        # 排除字數過短的行
-        if len(line) < 15 or line.replace("：", "").replace(":", "").strip() in ["前言", "引言", "摘要", "一、前言", "1. 前言"]:
-            continue
-        summary = line
-        break
+def extract_summary_points_tags(summary_text, default_tag):
+    """解析 LLM 輸出的摘要、核心知識點與標籤"""
+    summary_part = ""
+    points_part = ""
+    tags = []
+    
+    # 預設標籤以防完全解析不到，截斷至 20 個字
+    tags.append({"name": default_tag[:20]})
+    
+    try:
+        # 1. 提取一句話摘要
+        if "【一句話摘要】" in summary_text:
+            s_idx = summary_text.find("【一句話摘要】") + len("【一句話摘要】")
+            p_idx = summary_text.find("【3個核心知識點】") if "【3個核心知識點】" in summary_text else len(summary_text)
+            summary_part = summary_text[s_idx:p_idx].strip()
         
-    if len(summary) > 200:
-        summary = summary[:197] + "..."
-    if not summary:
-        summary = f"關於『{tag}』主題的知識彙整專題文章。"
+        # 2. 提取核心知識點
+        if "【3個核心知識點】" in summary_text:
+            p_idx = summary_text.find("【3個核心知識點】") + len("【3個核心知識點】")
+            t_idx = summary_text.find("【AI標籤】") if "【AI標籤】" in summary_text else len(summary_text)
+            points_part = summary_text[p_idx:t_idx].strip()
+            
+        # 3. 提取 AI 標籤
+        if "【AI標籤】" in summary_text:
+            t_idx = summary_text.find("【AI標籤】") + len("【AI標籤】")
+            tags_str = summary_text[t_idx:].strip()
+            # 以逗號、頓號或空白拆分
+            raw_tags = re.split(r'[,，、\s\n]+', tags_str)
+            parsed_tags = []
+            for rt in raw_tags:
+                rt = rt.strip()
+                # 限制標籤長度不超過 8 個字，且防呆空值
+                if rt and len(rt) <= 8 and rt not in ["AI標籤", "AI標籤】"]:
+                    parsed_tags.append({"name": rt})
+            if parsed_tags:
+                tags = parsed_tags
+    except Exception as e:
+        print(f"    [WARN] 解析摘要、知識點與標籤失敗: {e}")
         
-    tags = [{"name": tag}]
-    return summary, tags
+    # 長度限制
+    if len(summary_part) > 200:
+        summary_part = summary_part[:197] + "..."
+    if not summary_part:
+        summary_part = f"關於『{default_tag}』主題的知識彙整專題文章。"
+        
+    return summary_part, points_part, tags
 
 def generate_core_knowledge_points(markdown_article):
-    """根據專題文章內容，呼叫 LLM 生成符合特定格式的 AI 核心知識點"""
+    """根據專題文章內容，呼叫 LLM 生成符合特定格式的 AI 核心知識點與簡短標籤"""
     prompt = f"""
-    請閱讀以下知識專題文章，並為其提煉出「一句話摘要」與「3個核心知識點」。
+    請閱讀以下知識專題文章，為其提煉出「一句話摘要」、「3個核心知識點」與「2-4個簡短的AI標籤（如：RAG, AI治理, 自動化, 軟體工程，每個標籤不超過6個字）」。
     
     文章內容：
     {markdown_article}
@@ -823,6 +886,8 @@ def generate_core_knowledge_points(markdown_article):
     - 知識點 1: [具體且具含金量的知識點 1]
     - 知識點 2: [具體且具含金量的知識點 2]
     - 知識點 3: [具體且具含金量的知識點 3]
+    【AI標籤】
+    標籤1, 標籤2, 標籤3
     """
     
     max_retries = 3
@@ -857,24 +922,13 @@ def generate_core_knowledge_points(markdown_article):
             time.sleep(5)
             
     # 備份回退方案
-    return "【一句話摘要】\n關於此專題的知識彙整文章。\n【3個核心知識點】\n- 知識點 1: 整合了多篇核心文獻的關鍵見解。\n- 知識點 2: 提供具體可操作的實踐建議與行動方案。\n- 知識點 3: 展現出技術或觀點的時間演進脈絡。"
+    return "【一句話摘要】\n關於此專題的知識彙整文章。\n【3個核心知識點】\n- 知識點 1: 整合了多篇核心文獻的關鍵見解。\n- 知識點 2: 提供具體可操作的實踐建議與行動方案。\n- 知識點 3: 展現出技術或觀點的時間演進脈絡。\n【AI標籤】\nAI知識, 專題彙整"
 
-def write_notion_page_with_blocks(notion, database_id, page_title, summary_text, tag_options, blocks):
+def write_notion_page_with_blocks(notion, database_id, page_title, summary_part, points_part, tag_options, blocks):
     """分頁追加寫入：建立頁面並分批寫入 blocks，完全突破 Notion 的 100 筆區塊負載限制"""
     first_chunk_size = 80
     first_chunk = blocks[:first_chunk_size]
     remaining_chunks = [blocks[i:i+80] for i in range(first_chunk_size, len(blocks), 80)]
-    
-    # 拆分【一句話摘要】與【3個核心知識點】
-    summary_part = ""
-    points_part = ""
-    if "【一句話摘要】" in summary_text and "【3個核心知識點】" in summary_text:
-        parts = summary_text.split("【3個核心知識點】")
-        summary_part = parts[0].replace("【一句話摘要】", "").strip()
-        points_part = parts[1].strip()
-    else:
-        summary_part = summary_text
-        points_part = ""
         
     # 建立頁面並寫入第一批 blocks
     new_page = notion.pages.create(
@@ -1287,24 +1341,27 @@ def main():
                 "url": art["url"]
             })
             
-        # 使用 Python 二次過濾與防護（Guardrail），剔除 LLM 憑空捏造的幻覺參考文獻
+        # 使用 Python 二次過濾與防護（Guardrail），剔除 LLM 憑空捏造的幻覺參考文獻，並提取外部文獻
         print("    [+] 正在進行引用關係與幻覺文獻校驗 (Guardrail)...")
-        markdown_article = filter_and_validate_markdown_citations(markdown_article, all_citations)
+        markdown_article, external_citations = filter_and_validate_markdown_citations(markdown_article, all_citations)
         
-        # 用 Python 強制附加 100% 正確的「網路文章影片筆記資料庫」真實參考文獻列表
+        # 用 Python 強制附加 100% 正確的「網路文章影片筆記資料庫」真實參考文獻與外部文獻列表
         ref_section = "\n\n#### 參考文獻\n"
         for cit in all_citations:
             url_text = f"({cit['url']})" if cit.get('url') else "(來源資料庫無連結)"
             ref_section += f"- `[資料庫文獻 {cit['num']}]` [{cit['title']}]{url_text}\n"
+        for ec in external_citations:
+            url_text = f"({ec['url']})" if ec.get('url') else "(外部連結無效)"
+            ref_section += f"- `[外部文獻 {ec['num']}]` [{ec['title']}]{url_text}\n"
         markdown_article += ref_section
         
-        # E. 將 Markdown 轉成 Notion 區塊，並提取標籤
+        # E. 將 Markdown 轉成 Notion 區塊
         blocks = markdown_to_notion_blocks(markdown_article)
-        _, tag_options = extract_summary_and_tags(markdown_article, tag)
         
-        # 呼叫 LLM 專門為該文章提煉符合【一句話摘要】與【3個核心知識點】格式的摘要文字
-        print("    [+] 正在為專題文章提煉【一句話摘要】與【3個核心知識點】...")
+        # 呼叫 LLM 專門為該文章提煉符合【一句話摘要】與【3個核心知識點】格式的摘要文字與 AI 標籤
+        print("    [+] 正在為專題文章提煉【一句話摘要】、【3個核心知識點】與【AI標籤】...")
         summary_text = generate_core_knowledge_points(markdown_article)
+        summary_part, points_part, tag_options = extract_summary_points_tags(summary_text, tag)
         
         # 解析 LLM 回傳的文章主標題，作為 Notion 的頁面 Title
         page_title = ""
@@ -1331,7 +1388,8 @@ def main():
                 notion=notion,
                 database_id=args.dest_db,
                 page_title=page_title,
-                summary_text=summary_text,
+                summary_part=summary_part,
+                points_part=points_part,
                 tag_options=tag_options,
                 blocks=blocks
             )
