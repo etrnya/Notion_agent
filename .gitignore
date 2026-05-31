@@ -1,0 +1,32 @@
+# API Keys and local configurations
+.env
+*.env
+*.json
+
+# Python caching and environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.venv/
+.env/
+
+# Test scripts and temporary data
+test_query.py
+list_models.py
+properties.txt
+properties.json
+
+# IDE config files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
