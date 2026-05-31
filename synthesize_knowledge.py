@@ -85,11 +85,56 @@ def init_llm():
     print("[ERROR] 未找到 gcp-key.json，且未在 .env 中設定 DEEPSEEK_API_KEY, GEMINI_API_KEY 或 OPENAI_API_KEY")
     sys.exit(1)
 
+def fallback_retrieve_articles(theme_name, all_articles, count=3):
+    """當 LLM 回傳的文獻 ID/Index 無法匹配時，使用物理規則從所有文章中召回最相關的真實文章"""
+    scored_articles = []
+    
+    # 簡單提取關鍵字 (去除常見字)
+    words = re.findall(r'[\u4e00-\u9fa5]{2,4}|[a-zA-Z0-9]+', theme_name)
+    # 過濾掉一些無意義的詞
+    stop_words = {"挑戰", "框架", "合作", "實踐", "省思", "深度", "批判", "探討", "研究", "分析", "實作", "治理", "國際"}
+    keywords = [w for w in words if w not in stop_words]
+    if not keywords:
+        keywords = words
+        
+    for art in all_articles:
+        title = art.get("title", "")
+        summary = art.get("summary", "")
+        
+        # 計算匹配度分數
+        match_score = 0.0
+        for kw in keywords:
+            if kw.lower() in title.lower():
+                match_score += 10.0  # 標題包含關鍵字加 10 分
+            if kw.lower() in summary.lower():
+                match_score += 3.0   # 摘要包含關鍵字加 3 分
+                
+        # 加上原本的 RAG 分數以保證質量
+        final_score = match_score + art.get("rag_score", 5.0)
+        scored_articles.append((final_score, art))
+        
+    # 依分數降序排序
+    scored_articles.sort(key=lambda x: x[0], reverse=True)
+    return [item[1] for item in scored_articles[:count]]
+
 def semantic_clustering(articles_brief, existing_tags, count):
     """呼叫 LLM 進行跨文章的語意聚類，找出適合撰寫深度專題文章的【多文獻合成主題】"""
+    # 1. 建立 index 對照表，避免 LLM 複製錯 UUID
+    brief_with_indices = []
+    index_to_id = {}
+    for idx, art in enumerate(articles_brief):
+        art_idx = str(idx)
+        brief_with_indices.append({
+            "index": art_idx,
+            "title": art["title"],
+            "tags": art["tags"],
+            "summary": art["summary"]
+        })
+        index_to_id[art_idx] = art["id"]
+
     prompt = f"""
-    以下是從知識庫中撈出的已處理文章列表（共 {{len(articles_brief)}} 篇）：
-    {{json.dumps(articles_brief, ensure_ascii=False)}}
+    以下是從知識庫中撈出的已處理文章列表（共 {{len(brief_with_indices)}} 篇）：
+    {{json.dumps(brief_with_indices, ensure_ascii=False)}}
 
     已存在的專題主題包括：{{json.dumps(list(existing_tags), ensure_ascii=False)}}。
     請避開這些方向，對剩下的文章進行「跨文獻語意聚類」，找出全新且適合撰寫深度專題文章的【多文獻合成主題】。
@@ -104,11 +149,12 @@ def semantic_clustering(articles_brief, existing_tags, count):
       {{
         "theme": "主題名稱（例如：AI 輔助軟體開發的雙面刃與風險治理）",
         "rationale": "為什麼要彙整這個主題的簡短說明",
-        "core_article_ids": ["文章ID_A", "文章ID_B"],
-        "helper_article_ids": ["文章ID_C"]
+        "core_article_indices": ["0", "1"],
+        "helper_article_indices": ["2"]
       }}
     ]
 
+    注意：請務必回傳對應文章列表中的真實 "index" 值（如 "0", "1" 等字串），絕對不要使用範例中的 "0", "1", "2" 或是自創其他 ID，也絕對不能使用文章的標題。
     請只回傳 strict JSON，不要用 ```json 包覆。
     """
     
@@ -158,14 +204,59 @@ def semantic_clustering(articles_brief, existing_tags, count):
                 res_text = res_text.strip()
                 
             data = json.loads(res_text)
+            raw_themes = []
             if isinstance(data, dict) and "themes" in data:
-                return data["themes"]
+                raw_themes = data["themes"]
             elif isinstance(data, list):
-                return data
+                raw_themes = data
             else:
-                return [data]
+                raw_themes = [data]
+                
+            # 將 indices 轉換回 UUID (core_article_ids / helper_article_ids)
+            processed_themes = []
+            for t in raw_themes:
+                core_ids = []
+                # 支援 core_article_indices
+                if "core_article_indices" in t:
+                    for idx_str in t["core_article_indices"]:
+                        idx_str = str(idx_str).strip()
+                        if idx_str in index_to_id:
+                            core_ids.append(index_to_id[idx_str])
+                # 支援 core_article_ids
+                elif "core_article_ids" in t:
+                    for cid in t["core_article_ids"]:
+                        cid_str = str(cid).strip()
+                        if cid_str in index_to_id:
+                            core_ids.append(index_to_id[cid_str])
+                        elif cid_str.replace("-", "").lower() in [aid.replace("-", "").lower() for aid in index_to_id.values()]:
+                            matched_id = next(aid for aid in index_to_id.values() if aid.replace("-", "").lower() == cid_str.replace("-", "").lower())
+                            core_ids.append(matched_id)
+                            
+                helper_ids = []
+                if "helper_article_indices" in t:
+                    for idx_str in t["helper_article_indices"]:
+                        idx_str = str(idx_str).strip()
+                        if idx_str in index_to_id:
+                            helper_ids.append(index_to_id[idx_str])
+                elif "helper_article_ids" in t:
+                    for hid in t["helper_article_ids"]:
+                        hid_str = str(hid).strip()
+                        if hid_str in index_to_id:
+                            helper_ids.append(index_to_id[hid_str])
+                        elif hid_str.replace("-", "").lower() in [aid.replace("-", "").lower() for aid in index_to_id.values()]:
+                            matched_id = next(aid for aid in index_to_id.values() if aid.replace("-", "").lower() == hid_str.replace("-", "").lower())
+                            helper_ids.append(matched_id)
+                            
+                processed_themes.append({
+                    "theme": t.get("theme", "未定義主題"),
+                    "rationale": t.get("rationale", ""),
+                    "core_article_ids": core_ids,
+                    "helper_article_ids": helper_ids
+                })
+                
+            return processed_themes
         except Exception as e:
-            print(f"  [WARN] 語意聚類 LLM 呼叫失敗 (嘗試 {{attempt+1}}/{{max_retries}}): {{e}}，將在 5 秒後重試...")
+            print(f"  [WARN] 語意聚類 LLM 呼叫失敗 (嘗試 {attempt+1}/{max_retries}): {e}，將在 5 秒後重試...")
             time.sleep(5)
             
     print("  [ERROR] 語意聚類呼叫失敗，已達最大重試次數。")
@@ -275,9 +366,9 @@ def ask_llm(tag, articles, core_articles_content, devils_advocate_critique=""):
 
     prompt = f"你是一個極度嚴謹的知識整理與內容策劃專家。請將以下關於『{tag}』主題的參考文獻進行深度融會貫通，撰寫一篇有系統、結構完整且具備技術細節的『專題知識文章』。\n\n"
     
-    prompt += "=== 參考文獻清單（請嚴格根據以下文獻的編號進行正文段落內標註引用） ===\n"
+    prompt += "=== 參考文獻清單（請根據以下文獻的編號進行正文段落內標註引用） ===\n"
     for cit in all_citations:
-        prompt += f"【文獻 {cit['num']}】標題：{cit['title']}\n"
+        prompt += f"【資料庫文獻 {cit['num']}】標題：{cit['title']}\n"
         prompt += f"發表年份：{cit['year']} | 連結：{cit['url'] if cit['url'] else '無'}\n"
         if cit["type"] == "core":
             prompt += f"核心內文細節：\n{cit['content_preview']}\n"
@@ -296,25 +387,28 @@ def ask_llm(tag, articles, core_articles_content, devils_advocate_critique=""):
 2. 前言：說明這個主題在現代數位/工作場景中的價值與演進脈絡。
 3. 核心觀點與概念彙整：
    - 整合文獻的精髓，整理出 2-3 個深入的觀點，並以標題與段落詳細展開。
-   - 【硬性要求】：在撰寫的每一個觀點、技術描述或陳述句後面，必須在其段落或句子結尾標註其出處的文獻編號（例如：`...此技術能顯著提升工作效率 [1]。` 或是 `...在 2026 年的應用中更趨於成熟 [3, 5]。`）。
-   - 請根據文獻的發表年份（例如：[2025]、[2026]），在撰寫核心觀點時展現出「時間演進」的技術發展脈絡，避免時空錯置。
+   - 【硬性要求 - 來源區分與標註】：
+     - 凡是來自於上方『參考文獻清單』中的內容（包含觀點、數據、案例），在正文中引用時，必須在句子或段落結尾嚴格標註出處（格式為：`[資料庫文獻 X]`，例如：`...以此來降低 Token 浪費 [資料庫文獻 1]。` 或 `...適用於快速開發 [資料庫文獻 2, 3]。`）。
+     - 凡是您（AI）為了補充主題完整性、進行深入研究而從外部引入的知識、背景或延伸分析，必須標註 `[外部補充/AI延伸]`（例如：`...業界通常會結合自動化測試 [外部補充/AI延伸]。`）。
+     - 【文獻佔比】：整篇文章的內容中，來自『參考文獻清單』的內容佔比必須至少有 70% 以上，嚴禁完全脫離文獻清單憑空捏造無關的科普大話。
+   - 請根據文獻的發表年份，在撰寫核心觀點時展現出「時間演進」的技術發展脈絡，避免時空錯置。
 4. 【硬性要求】反向觀點與不適用情境：
    - 必須包含一個大標題 `#### 反向觀點與不適用情境`。
-   - 整合上述提供之惡魔代言人批判，深入探討此主題/技術的侷限性、業界失敗案例，以及在什麼特定情境下絕對不該採用，讓專題文章具備客觀辯證與風險防範價值。
+   - 整合上述提供之惡魔代言人批判，深入探討此主題/技術的侷限性、業界失敗案例，以及在什麼特定情境下絕對不該採用，讓專題文章具備客觀辯證與風險防範價值。論述時凡是基於參考文獻的批判請標註 `[資料庫文獻 X]`，AI延伸分析請標註 `[外部補充/AI延伸]`。
 5. 實踐與下一步行動計畫：
    - 必須包含一個大標題 `#### 下一步行動計畫 (Action Items)`。
-   - 提供 2-3 個具體、可落地、可執行的下一步行動，並格式化為 Markdown 任務列表。例如：
-     - [ ] 行動指引 1 [1]
-     - [ ] 行動指引 2 [3]
-6. 參考文獻列表：
-   - 在文章末尾列出「參考文獻」標題。
-   - 【硬性要求】：只列出您在文章中「實際標註引用」過的文獻。如果某篇文獻在正文中沒有被 `[編號]` 引用，則絕對不能出現在參考文獻列表中。
-   - 格式必須為：- `[文獻編號] [文章標題](原始連結)`。例如：`- [1] [AI開發新趨勢](https://example.com)`。如果原始連結為「無」，請寫成 `- [1] [AI開發新趨勢](無連結)`。
-   - 【警告】：嚴禁憑空捏造任何不在上述清單中的文獻或網址連結！
+   - 提供 2-3 個具體、個人可落地執行、高度具體實踐性的任務，格式化為 Markdown 任務列表。
+   - 【警告】：絕對禁止生成與個人開發者/知識庫使用者無關的空洞大企業或政府套話（例如「設立倫理委員會」、「投資數據治理」、「建立合規團隊」、「推動立法」等）。
+   - 即使文獻討論的是宏觀的「AI 治理與政策」，也必須在行動計畫中將其轉化為個人在日常開發/使用 AI 時可落地之操作，例如：「使用本地 ollama 跑敏感資料以防洩露 [資料庫文獻 1]」或「在 IDE 提示詞中加入安全護欄 [外部補充/AI延伸]」。
+   - 每個行動指引後必須標註其出處（如：`[資料庫文獻 1]` 或 `[外部補充/AI延伸]`）。
+6. 關於參考文獻列表：
+   - 【硬性要求】不要在文章末尾自己生成「參考文獻」區塊。請寫到下一步行動計畫結束即可，不要輸出任何參考文獻清單！
 
 注意：請直接回傳 Markdown 文本，不要用 ```markdown 標籤包覆，也不要有任何無關的開頭或結尾問候。
 """
     
+    system_prompt = "你是一個極度嚴謹的知識庫彙整專家。你必須嚴格遵守引用標註指令，在正文的每一句陳述（觀點、技術細節等）結尾，強制且精確標註 `[資料庫文獻 X]`（若源自提供之文獻清單）或 `[外部補充/AI延伸]`（若源自你自己的外部知識）。絕對禁止漏掉引用標記，否則會導致系統解析崩潰！不要自己生成文末的『參考文獻』區塊。"
+
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -322,7 +416,7 @@ def ask_llm(tag, articles, core_articles_content, devils_advocate_critique=""):
                 response = openai_client.chat.completions.create(
                     model="deepseek-chat",
                     messages=[
-                        {"role": "system", "content": "You are a helpful knowledge curator. You output strict Markdown in Traditional Chinese."},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ]
                 )
@@ -330,14 +424,15 @@ def ask_llm(tag, articles, core_articles_content, devils_advocate_critique=""):
             elif engine_name == "gemini":
                 response = gemini_client.models.generate_content(
                     model="gemini-2.5-flash",
-                    contents=prompt
+                    contents=prompt,
+                    config={"system_instruction": system_prompt}
                 )
                 return response.text
             else:
                 response = openai_client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=[
-                        {"role": "system", "content": "You are a helpful knowledge curator. You output strict Markdown in Traditional Chinese."},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": prompt}
                     ]
                 )
@@ -654,48 +749,40 @@ def markdown_to_notion_blocks(markdown_text):
 
 def filter_and_validate_markdown_citations(markdown_text, all_citations):
     """使用 Python 對 LLM 回傳的 Markdown 進行引用的二次校驗，防止幻覺"""
-    # 建立一個真實的 url -> title 對照表，以及編號對照表
-    valid_urls = {cit["url"] for cit in all_citations if cit["url"]}
-    valid_titles = {cit["title"] for cit in all_citations}
     max_valid_num = len(all_citations)
     
-    # 1. 修正正文中的超標引用編號（例如只給了5篇，LLM 卻寫了 [7]）
+    # 1. 修正正文中的超標引用編號（例如只給了 3 篇，LLM 卻寫了 [資料庫文獻 5]）
     def replace_citation(match):
-        cit_str = match.group(0)
+        cit_str = match.group(1)
         nums = [int(n) for n in re.findall(r'\d+', cit_str)]
         valid_nums = [n for n in nums if 1 <= n <= max_valid_num]
         if not valid_nums:
             return ""
-        return "[" + ", ".join(map(str, valid_nums)) + "]"
+        return "[資料庫文獻 " + ", ".join(map(str, valid_nums)) + "]"
         
-    fixed_text = re.sub(r'\[\d+(?:\s*,\s*\d+)*\]', replace_citation, markdown_text)
+    # 匹配 [資料庫文獻 X] 格式
+    fixed_text = re.sub(r'\[資料庫文獻\s*(\d+(?:\s*,\s*\d+)*)\]', replace_citation, markdown_text)
     
-    # 2. 修正文章最後的「參考文獻」列表，剔除幻覺文獻
+    # 同時相容舊的 [X] 格式，以防 LLM 仍然寫成 [1] 的格式
+    def replace_old_citation(match):
+        cit_str = match.group(1)
+        nums = [int(n) for n in re.findall(r'\d+', cit_str)]
+        valid_nums = [n for n in nums if 1 <= n <= max_valid_num]
+        if not valid_nums:
+            return ""
+        return "[資料庫文獻 " + ", ".join(map(str, valid_nums)) + "]"
+        
+    fixed_text = re.sub(r'\[(\d+(?:\s*,\s*\d+)*)\]', replace_old_citation, fixed_text)
+    
+    # 2. 物理截斷：如果 LLM 自己生成了參考文獻區塊，直接將其完全切除，交由 Python 自動生成
     lines = fixed_text.split('\n')
     cleaned_lines = []
-    in_references_section = False
-    
     for line in lines:
-        if "參考文獻" in line or "Reference" in line:
-            in_references_section = True
-            cleaned_lines.append(line)
-            continue
-            
-        if in_references_section:
-            link_match = re.search(r'\[([^\]]+)\]\(([^)]+)\)', line)
-            if link_match:
-                title = link_match.group(1).strip()
-                url = link_match.group(2).strip()
-                
-                # 判斷這篇文獻是否在我們的真實文獻列表中，或者是標題符合
-                is_valid = (url in valid_urls) or any(t in title for t in valid_titles)
-                if not is_valid:
-                    print(f"      [GUARDRAIL] 剔除幻覺參考文獻: {title} (URL: {url})")
-                    continue
-            
+        if any(h in line for h in ["#### 參考文獻", "### 參考文獻", "## 參考文獻", "Reference"]):
+            break
         cleaned_lines.append(line)
         
-    return '\n'.join(cleaned_lines)
+    return '\n'.join(cleaned_lines).strip()
 
 def extract_summary_and_tags(markdown_text, tag):
     """從 Markdown 內容中提取第一段作為 AI摘要，並以主題作為 AI 標籤"""
@@ -987,7 +1074,8 @@ def main():
             "inspiration": inspiration,
             "rag_score": rag_score
         }
-        articles_by_id[page["id"]] = art_info
+        clean_id = page["id"].replace("-", "").lower()
+        articles_by_id[clean_id] = art_info
         
         simple_tags = [t.get("name") for t in tags if t.get("name")]
         articles_brief.append({
@@ -1122,10 +1210,25 @@ def main():
         print(f"[INFO] 語意聚類已選定 {len(selected_themes)} 個專題主題：")
         for idx, t in enumerate(selected_themes, 1):
             print(f"  {idx}. {t.get('theme')} (包含核心文獻 {len(t.get('core_article_ids', []))} 篇，輔助 {len(t.get('helper_article_ids', []))} 篇)")
-            
+        # 建立一個 list 把所有文章收集起來，方便在匹配不到時進行物理檢索
+        all_articles_list = list(articles_by_id.values())
+        
         for t in selected_themes:
-            core_candidates_raw = [articles_by_id[cid] for cid in t["core_article_ids"] if cid in articles_by_id]
-            other_articles_raw = [articles_by_id[hid] for hid in t.get("helper_article_ids", []) if hid in articles_by_id]
+            core_candidates_raw = [articles_by_id[cid.replace("-", "").lower()] for cid in t["core_article_ids"] if cid.replace("-", "").lower() in articles_by_id]
+            other_articles_raw = [articles_by_id[hid.replace("-", "").lower()] for hid in t.get("helper_article_ids", []) if hid.replace("-", "").lower() in articles_by_id]
+            
+            # --- 物理防禦容錯 (保證 100% 有真實文獻注入) ---
+            if not core_candidates_raw:
+                print(f"    [WARN] 語意聚類主題 '{t.get('theme')}' 的核心文獻匹配為空，將啟用物理防禦召回...")
+                core_candidates_raw = fallback_retrieve_articles(t.get("theme", ""), all_articles_list, count=2)
+                print(f"    [OK] 物理防禦成功召回 {len(core_candidates_raw)} 篇真實核心文獻。")
+                
+            # 如果輔助文獻也為空，召回其他跟主題最相關的文章
+            if not other_articles_raw and len(all_articles_list) > len(core_candidates_raw):
+                core_ids = {c["id"] for c in core_candidates_raw}
+                eligible_for_helper = [a for a in all_articles_list if a["id"] not in core_ids]
+                other_articles_raw = fallback_retrieve_articles(t.get("theme", ""), eligible_for_helper, count=1)
+                
             themes_to_process.append({
                 "tag": t["theme"],
                 "core_candidates": core_candidates_raw,
@@ -1187,7 +1290,14 @@ def main():
         # 使用 Python 二次過濾與防護（Guardrail），剔除 LLM 憑空捏造的幻覺參考文獻
         print("    [+] 正在進行引用關係與幻覺文獻校驗 (Guardrail)...")
         markdown_article = filter_and_validate_markdown_citations(markdown_article, all_citations)
-            
+        
+        # 用 Python 強制附加 100% 正確的「網路文章影片筆記資料庫」真實參考文獻列表
+        ref_section = "\n\n#### 參考文獻\n"
+        for cit in all_citations:
+            url_text = f"({cit['url']})" if cit.get('url') else "(來源資料庫無連結)"
+            ref_section += f"- `[資料庫文獻 {cit['num']}]` [{cit['title']}]{url_text}\n"
+        markdown_article += ref_section
+        
         # E. 將 Markdown 轉成 Notion 區塊，並提取標籤
         blocks = markdown_to_notion_blocks(markdown_article)
         _, tag_options = extract_summary_and_tags(markdown_article, tag)
