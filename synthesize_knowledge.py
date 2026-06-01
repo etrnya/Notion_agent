@@ -695,17 +695,65 @@ def parse_rich_text(text):
     return rich_text
 
 def markdown_to_notion_blocks(markdown_text):
-    """將 Markdown 文字解析並轉換為 Notion 的區塊 (Blocks) 格式，支援待辦清單"""
+    """將 Markdown 文字解析並轉換為 Notion 的區塊 (Blocks) 格式，支援待辦清單與原生代碼區塊"""
     blocks = []
     lines = markdown_text.split('\n')
     
+    in_code_block = False
+    code_content = []
+    code_language = "plain text"
+    
     for line in lines:
-        line = line.strip()
-        if not line:
+        stripped_line = line.strip()
+        
+        # 處理代碼區塊的開頭與結束
+        if stripped_line.startswith('```'):
+            if in_code_block:
+                # 結束代碼區塊，封裝為 Notion code block
+                full_code = '\n'.join(code_content)
+                blocks.append({
+                    "object": "block",
+                    "type": "code",
+                    "code": {
+                        "rich_text": [
+                            {
+                                "type": "text",
+                                "text": {"content": full_code}
+                            }
+                        ],
+                        "language": code_language
+                    }
+                })
+                in_code_block = False
+                code_content = []
+            else:
+                # 開始代碼區塊，判定語言
+                in_code_block = True
+                lang = stripped_line[3:].strip().lower()
+                if lang in ("js", "javascript"):
+                    code_language = "javascript"
+                elif lang in ("ts", "typescript"):
+                    code_language = "typescript"
+                elif lang in ("py", "python"):
+                    code_language = "python"
+                elif lang in ("json",):
+                    code_language = "json"
+                elif lang in ("html", "css", "yaml", "markdown", "sql"):
+                    code_language = lang
+                else:
+                    code_language = "plain text"
+            continue
+            
+        if in_code_block:
+            # 代碼區塊內部保留原汁原味的縮排與底線
+            code_content.append(line)
+            continue
+            
+        if not stripped_line:
             continue
             
         # 解析標題 (支援 # 到 ######，自動降級大於 3 級的標題，並剔除字首的 # 號)
-        header_match = re.match(r'^(#{1,6})\s+(.*)$', line)
+        header_match = re.match(r'^(#{1,6})\s+(.*)$', stripped_line)
         if header_match:
             level = len(header_match.group(1))
             content = header_match.group(2)
@@ -718,8 +766,8 @@ def markdown_to_notion_blocks(markdown_text):
                 }
             })
         # 解析待辦清單 (To-Do List Checkbox)
-        elif re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', line):
-            todo_match = re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', line)
+        elif re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', stripped_line):
+            todo_match = re.match(r'^[-*]\s*\[\s*([xX\s]?)\s*\]\s*(.*)$', stripped_line)
             checked = todo_match.group(1).lower() == 'x'
             content = todo_match.group(2).strip()
             blocks.append({
@@ -731,16 +779,16 @@ def markdown_to_notion_blocks(markdown_text):
                 }
             })
         # 解析一般無序清單
-        elif line.startswith('- ') or line.startswith('* '):
+        elif stripped_line.startswith('- ') or stripped_line.startswith('* '):
             blocks.append({
                 "object": "block",
                 "type": "bulleted_list_item",
                 "bulleted_list_item": {
-                    "rich_text": parse_rich_text(line[2:])
+                    "rich_text": parse_rich_text(stripped_line[2:])
                 }
             })
-        elif re.match(r'^\d+\.\s', line):
-            content = re.sub(r'^\d+\.\s', '', line)
+        elif re.match(r'^\d+\.\s', stripped_line):
+            content = re.sub(r'^\d+\.\s', '', stripped_line)
             blocks.append({
                 "object": "block",
                 "type": "numbered_list_item",
@@ -759,6 +807,7 @@ def markdown_to_notion_blocks(markdown_text):
             })
             
     return blocks
+
 
 def filter_and_validate_markdown_citations(markdown_text, all_citations):
     """使用 Python 對 LLM 回傳的 Markdown 進行引用的二次校驗，並提取正文中的外部文獻"""

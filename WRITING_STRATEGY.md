@@ -1,5 +1,4 @@
 # Notion Agent 知識彙整與專題撰寫策略架構
-
 本文件詳細說明多主題 RAG 彙整器 ([synthesize_knowledge.py](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/synthesize_knowledge.py)) 的底層設計策略、寫作邏輯與技術框架。
 
 ---
@@ -108,3 +107,16 @@ Notion 的 UUID 較長且包含連字符（如 `06d38af4-6d06-4ad6-a4c6-831809c9
 
 ### 🎯 任務資料庫關聯 (Action Items Synchronization)
 在頁面成功寫入後，系統會自動解析行動計畫文字，清除其中的參考標註，並在 Notion **任務資料庫**中建立一筆「未開始」的任務，同時利用 `relation` 屬性將其關聯至該篇專題文章，形成完美的知識到行動的閉環。
+
+---
+
+## 🚀 邁向下一代 V3 & V3.5 決策知識管理體系 (DKMS)
+
+本文件說明的是 V2 知識管理階段 (KM) 的現行寫作策略。針對最新的專家評審與架構審查意見，V3 & V3.5 系統將從「知識管理」演進至「決策知識管理 (Decision Knowledge Management)」架構，包含以下核心改造點：
+* **資料血統與事實防污染**：事實提取層 (Fact Layer) 引入 `evidence_quote` 與 `provenance` 血統追溯，正文生成器只能自 Claim Pool 取料。
+* **可解釋性層 (Explainability Layer)**：每篇專題自動附帶選擇與淘汰文獻原因的報告，防止複雜度黑箱。
+* **決策記憶與失效提醒 (Decision Memory)**：結構化記錄決策與其背景假設，並在假設失效（如團隊擴大）時主動觸發重新評估提醒。
+* **領域自適應時間衰減**：根據知識領域（如 AI vs. 心理學）動態調整時間衰減係數，避免自動歧視經典文獻。
+* **情境脈絡對比**：將單純的衝突對立升級為「情境脈絡圖譜 (Context Graph)」，探討不同情境下的適用條件而非一味判斷是非。
+
+詳細設計藍圖與架構演進對比，請參閱 [Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)：架構演進與設計藍圖](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/V3_ARCHITECTURE.md)。

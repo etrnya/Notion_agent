@@ -119,3 +119,19 @@ NOTION_TASK_DATABASE_ID=your_task_database_id_here
 | **停用/啟用 GCP JSON 金鑰憑證** | 打開 `.env` 修改 `USE_VERTEX_AI` | `USE_VERTEX_AI=true` (優先啟動 GCP)；`USE_VERTEX_AI=false` (回退至一般 Key) |
 | **乾跑預覽 (不寫入 Notion)** | `python batch_processor.py --limit 5 --dry-run` | **乾跑模式 (Dry Run)**：僅進行資料撈取與提煉預覽。 |
 | **自然語言對話式查詢與管理** | `python notion_mcp_agent.py` | **對話式 Agent**：直接用自然語言查找、操作資料庫。 |
+
+---
+
+## 🚀 未來藍圖：Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)
+
+針對當前 RAG 知識彙整系統面臨的關鍵盲點，本專案已設計了 **V3 & V3.5 決策知識管理體系 (Decision Knowledge Management System)** 架構藍圖。系統將從簡單的「收藏 -> 摘要」演進為協助決策的研究智能體，核心設計包括：
+
+1. **決策記憶與失效提醒 (Decision Memory)**：結構化記錄決策與其背景前提假設，在外部假設失效（如團隊擴大）時自動建立重審任務，引導未來決策。
+2. **可解釋性報告層 (Explainability Layer)**：每篇專題自動附帶選擇與淘汰文獻原因的報告，防止多層系統淪為無法 Debug 的黑箱。
+3. **資料血統追溯 (Data Lineage)**：在 Claim Pool 的 JSON 中記錄精確引文 (`evidence_quote`) 與物理位置 (`provenance`)，實現「觀點 -> 原始段落」的三級血統追溯。
+4. **領域自適應時間衰減 (Domain-Aware Freshness)**：根據學門特徵（如 AI 快速更迭 vs. 心理學經典常青）動態配置時間衰減係數，避免歧視經典文獻。
+5. **情境脈絡對比 (Context Graph)**：提取 Claims 所在的情境變數（如團隊規模、專案大小），輸出「情境對比」而非一味判斷是非對錯。
+
+> 📖 **詳細架構與研發 Roadmap 請參閱**：
+> [Notion Agent V3 & V3.5 決策知識管理體系 (DKMS) 架構演進與設計藍圖](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/V3_ARCHITECTURE.md)
+

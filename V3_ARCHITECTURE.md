@@ -1,112 +1,202 @@
-# Notion Agent V3 知識研究智能體：架構演進與設計藍圖
+# Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)：架構演進與設計藍圖
 
-針對當前 RAG 知識彙整系統從「知識管理 (KM)」邁向「知識研究 (KR)」階段所面臨的關鍵盲點，本文件定義了 V3 智能助理系統的架構設計方案。
+針對當前 RAG 知識彙整系統從「知識管理 (KM)」邁向「知識研究 (KR)」，最終演進至「決策知識管理 (DKM, Decision Knowledge Management)」階段所面臨的關鍵盲點，本文件定義了 V3 到 V3.8 智能助理系統的架構設計方案與研發路線圖。
 
 ---
 
-## 🗺️ V3 架構演進對比 (KM vs. KR)
+## 🗺️ 架構演進對比 (KM -> KR -> DKM)
 
 ```mermaid
 graph TD
-    subgraph V2: 知識管理階段 (文字 -> 文字)
+    subgraph V2: 知識管理階段 (KM - 文字摘要)
         V2_Source[Notion 筆記] --> V2_Clust[語意聚類]
-        V2_Clust --> V2_DA[同模型假反駁]
-        V2_DA --> V2_Synth[LLM 混合 RAG 合成]
+        V2_Clust --> V2_Synth[LLM 混合 RAG 合成]
         V2_Synth --> V2_Doc[專題文章]
     end
 
-    subgraph V3: 知識研究階段 (資料 -> 事實 -> 洞察)
-        V3_Source[Notion 筆記 & 來源權重] --> V3_Clust[語意聚類 & 相關度重排]
-        V3_Clust --> V3_Fact[事實提取層 Fact Layer]
-        V3_Fact --> V3_Disproof[非對稱模型反證 Devil's Evidence]
-        V3_Fact --> V3_Synth[事實組裝 RAG 合成]
-        V3_Synth --> V3_Eval[新洞察評估器 Insight Evaluator]
-        V3_Eval -- 評估合格 --> V3_Doc[高含金量專題文章]
-        V3_Eval -- 未產生新洞察 (警報) --> V3_ReRetrieval[擴大文獻檢索]
+    subgraph V3 & V3.5: 決策知識研究階段 (DKM - 事實/解釋/決策閉環)
+        V3_Source[Notion 筆記] --> V3_Temp[領域自適應時間層 Domain-Aware Temporal]
+        V3_Temp --> V3_Clust[語意聚類 & TRS+QS 評估]
+        V3_Clust --> V3_Fact[事實與血統追溯層 Fact Layer with Lineage]
+        
+        V3_Fact --> V3_Context[情境脈絡圖譜 Context Graph]
+        V3_Fact --> V3_Disproof[非對稱反證 Devil's Evidence]
+        
+        V3_Context --> V3_Synth[事實與證據組裝合成]
+        V3_Disproof --> V3_Synth
+        
+        V3_Synth --> V3_Explain[可解釋性層 Explainability Layer]
+        V3_Explain --> V3_Eval[雙軌新洞察驗證器 Insight Validator]
+        
+        V3_Eval --> V3_Decision[決策記憶與失效觸發器 Decision Memory]
+        V3_Decision --> V3_Doc[Synthesis / Hypothesis 專題]
     end
 ```
 
 ---
 
-## 1. 拆分「主題相關度」與「主觀品質分數」 (Relevance vs. Quality)
+## 1. 檢索與排序優化：TRS/QS 分離與領域自適應時間衰減 (Domain-Aware Temporal Layer)
 
-* **痛點**：高分但無關的文章（如 Docker 實踐 10 分）會排擠低分但高度相關的文章（如 Notion 知識管理 5 分）。
-* **V3 設計**：將文章的篩選分數拆分為兩個獨立維度：
-  1. **品質分數 (Quality Score, QS)**：由原先公式計算，代表文獻本身的含金量。
-     $$QS = 0.4 \times \text{Credibility} + 0.3 \times \text{Actionability} + 0.3 \times \text{Inspiration}$$
-  2. **主題相關度分數 (Topic Relevance Score, TRS)**：計算文獻與語意聚類主題的特徵重疊度（如 Cosine Similarity 或詞組重合度）。
-* **最終加權排序分數 (Final Score)**：
-  $$\text{Final Score} = 0.6 \times TRS + 0.4 \times QS$$
-  *相關度佔 60% 決定檢索召回，品質佔 40% 決定排序優先級，確保文獻「不跑題且質量高」。*
+* **痛點**：
+  1. **無關高分文獻排擠**：高品質但與特定主題無關的文章會排擠低分但高度相關的文章。
+  2. **時間失效性 (Temporal Blindness) 與領域一刀切**：時間衰減（例如近期文獻優先）在 AI 領域高度適用，但在心理學、哲學、管理學（如《高效能人士的七個習慣》）等領域，經典文獻的價值歷久彌新。一刀切的時間衰減會導致系統「自動歧視經典文獻」。
+* **V3.8 設計**：
+  * **語意搜尋優先**：以 **Embedding Similarity (向量語意搜尋)** 作為第一召回，Keyword Search 降為備援。
+  * **領域自適應時間衰減 (Domain-Aware Decay)**：引入 `Domain Tag` (領域標籤) 與 `freshness_score` (新鮮度分數)。
+    $$\text{freshness\_score} = e^{-\lambda \cdot t}$$
+    *其中 $t$ 為當前時間與文獻發表時間的差距（以年為單位），$\lambda$ 為根據領域動態調整的衰減係數：*
+    
+    | 知識領域 (Domain) | 衰減係數 ($\lambda$) | 衰減速度 | 說明 |
+    | :--- | :---: | :---: | :--- |
+    | **AI / LLM** | `0.80` | 極快 | 技術日新月異，2 年前的文章參考價值極低 |
+    | **Software Eng** | `0.50` | 快 | 框架更迭頻繁，但底層設計模式相對穩定 |
+    | **Business Mode** | `0.30` | 中 | 商業策略與市場模式具備數年生命週期 |
+    | **Management** | `0.05` | 極慢 | 組織與管理學經典理論具備長期穩定價值 |
+    | **Philosophy / Psych** | `0.00` | 無衰減 | 哲學與心理學經典著述永不過時 |
+
+  * **最終加權排序分數 (Final Score)**：
+    $$\text{Final Score} = (0.7 \times TRS + 0.3 \times QS) \times \text{freshness\_score}$$
 
 ---
 
-## 2. 建立「事實提取層」 (Fact Extraction Layer)
+## 2. 事實提取層與資料血統追溯 (Fact Layer with Data Lineage)
 
-* **痛點**：文字直推文字（Text-to-Text）會導致 AI 在重組過程中產生細微的語意漂移，且極易漏掉正文標記。
-* **V3 設計**：在文獻輸入與專題合成之間，物理切分出一個「Fact Layer」。
-  * **做法**：對每篇核心文獻，先調用 LLM 提煉為結構化的事實聲明 JSON。
+* **痛點**：文字直推文字（Text-to-Text）會導致 AI 在提煉事實時產生「過度泛化」（例如將原文「某公司導入 Agent 後效率提升」泛化為事實「Agent 可提升企業效率」），在後續推論中誤差被無限放大。此外，隨資料庫規模擴大，無法快速追溯某個 Claim 的精確原始出處。
+* **V3.5 設計**：將 Fact Layer 升級為「事實 + 證據 + 類型 + 物理血統」的結構化 Claim Pool。
+  * **做法**：對每篇核心文獻，先提煉為包含原文精確引用與位置的結構化 JSON（Claim Pool）。
   ```json
   [
     {
-      "claim": "TW Legal RAG 開源模型基於法律條文進行了語意特徵微調",
-      "evidence": "在測試集上比通用 Llama 模型準確度提升 25%",
+      "claim": "基於工作流的 Agent 在特定垂直領域效率表現優於通用 RAG",
+      "evidence_quote": "原文第 3 段：在法律 RAG 測試集中，導入 Workflow 結構後，準確度由 Llama 預設的 60% 提升至 85%",
+      "evidence_type": "fact", 
+      "confidence": 0.92,
       "source_id": "Notion_Page_UUID_1",
-      "source_title": "臺灣法律RAG模型開源"
+      "source_date": "2025-06-01",
+      "provenance": {
+        "paragraph_id": "p_08328",
+        "chunk_id": "c_29a74",
+        "offset_range": [128, 256],
+        "anchor_text": "在法律 RAG 測試集中...提升至 85%"
+      }
     }
   ]
   ```
-  * **合成約束**：正文生成器 (Article Generator) 的輸入**僅能使用這份事實 JSON**，禁止直接吃原文。所有觀點必須嚴格對應到 `source_id` 的 Claim。
+  * **證據類型 (evidence_type)** 強制分類為：`fact` (客觀事實)、`opinion` (作者觀點)、`speculation` (作者推測)。
+  * **資料血統 (Data Lineage)**：藉由記錄 `provenance`，系統可實現「Claim -> Chunk -> Notion 原始段落」的三級血統追溯，供用戶隨時點擊回溯驗證。
 
 ---
 
-## 3. 非對稱模型反證 (Devil's Evidence)
+## 3. 複雜度防禦：系統可解釋性層 (Explainability Layer)
 
-* **痛點**：同一模型「自己反駁自己」容易流於客套的「假反駁」（優點寫滿篇，缺點兩三句）。
-* **V3 設計**：
-  * **角色對立**：正文由 Gemini-2.5-Pro / GPT-4o 撰寫；而「惡魔代言人」改由專注於代碼靜態分析、邏輯檢驗、或安全審查的專門 Agent（甚至調用不同的開源模型如 Llama-3-Guard）擔任。
-  * **任務改變**：惡魔 Agent 的 prompt 從「提出反對意見」改為「**尋找不支持本文觀點的證據 (Evidence Disproof)**」。例如：尋找與該 Claim 衝突的技術限制、官方 Deprecation 聲明、或本地資料庫中的失敗案例。
-
----
-
-## 4. 來源權重系統 (Source Weight)
-
-* **痛點**：FB 貼文、技術白皮書、官方 API 文件在系統中被一視同仁，容易導致基於社群流言的推論影響力大於官方規範。
-* **V3 設計**：
-  * 在 Notion 來源資料庫中新增屬性 `來源類型` (Select)，對應以下權重對照表：
-  
-  | 來源類型 (Source Type) | 權重 (Weight) | 適用對象 |
-  | :--- | :--- | :--- |
-  | **Official Doc** | `1.0` | 官方 API 文件、官方 GitHub Release、標準規範 |
-  | **Paper** | `0.9` | 學術會議論文、ArXiv 預印本 |
-  | **Tech Blog** | `0.7` | 業界公認技術部落格 (如 Vercel, Netflix Tech) |
-  | **Personal Note** | `0.5` | 個人開發筆記、日常碎碎念、工作週報 |
-  | **Social Post** | `0.3` | FB 貼文、Twitter 短文、論壇討論 |
-
-  * 計算文獻品質分數 (QS) 時，將 `Credibility`（可信度）乘上該來源的 `Weight`，讓官方規格與權威論文天然具備更高的說服力。
-
----
-
-## 5. 新洞察檢查器 (Insight Evaluator)
-
-* **痛點**：AI 僅僅是把「A 說了什麼、B 說了什麼」重組在一起，缺乏跨文獻融合推導出的「新知識/新洞察」。
-* **V3 設計**：
-  * 在文章合成後，加入一個獨立的 Gatekeeper：**Insight Evaluator**。
-  * **評估原則**：
-    1. 「這篇文章中，有哪些觀點是*單一文獻中不存在*，而是透過多篇文獻交叉推導出來的？」
-    2. 「文章結論是否需要至少兩篇以上文獻的證據支撐才能成立？」
-  * **處理分支**：
-    * **合格**：標記並高亮這些 `【跨文獻推論】`。
-    * **不合格**：若回答「無新洞察」，系統應判定此文僅為「重組摘要」，拒絕寫入「AI 整理知識庫」，而是將其降級寫入「基礎摘要庫」，或觸發擴大召回（Re-Retrieval）流程重新寫作。
+* **痛點**：隨著 TRS, QS, Temporal Layer, Fact Layer, Validator 等 8 層架構層疊加，系統會淪為無法 debug 的「黑盒子」，使用者無法理解為什麼某篇文章最終被選中或被淘汰。
+* **V3.5 設計**：
+  * 在每篇生成的專題文章底層 metadata 中，自動生成並附帶 **可解釋性報告 (Explainability Report)**。
+  ```json
+  {
+    "explainability_report": {
+      "selected_articles": [
+        {
+          "title": "LangGraph 多智能體架構實踐",
+          "trs": 0.88,
+          "qs": 0.71,
+          "freshness": 0.95,
+          "final_score": 0.84
+        }
+      ],
+      "rejected_articles": [
+        {
+          "title": "Docker 2023 最佳實踐",
+          "trs": 0.12,
+          "reason_code": "LOW_RELEVANCE"
+        },
+        {
+          "title": "LangChain 2023 舊版指南",
+          "trs": 0.85,
+          "freshness": 0.15,
+          "reason_code": "EXPIRED"
+        }
+      ]
+    }
+  }
+  ```
+  * **可追溯的 AI 推理**：藉此讓用戶清楚洞悉「AI 為什麼這樣選」，而不是盲信 AI 的主觀推薦。
 
 ---
 
-## 6. AI 推理比例限制與顯式標記 (Explicit Reasoning)
+## 4. 決策記憶與失效提醒觸發器 (Decision Memory)
 
-* **痛點**：AI 自己推理的「延伸分析」在正文中佔比過高，導致整篇文章 80% 都是 AI 的幻覺常識，脫離了用戶本地資料庫的約束。
-* **V3 設計**：
-  * **硬性比例**：AI 自己的推理在正文總字數中**不得超過 15%**。
-  * **顯式分類**：廢除模糊的 `[外部補充/AI延伸]`，強制將非資料庫來源的段落標註為以下三類：
-    1. `【跨文獻推論】`：從資料庫文獻 A 的 X 點與文獻 B 的 Y 點共同歸納出的邏輯。
-    2. `【AI延伸推測】`：基於 AI 背景知識庫補充的常識（如工具的 npm 安裝指令）。
-    3. `[外部文獻 Y]`：AI 主動引入的真實外部網路連結。
+* **痛點**：知識的真正價值不在於被整理，而在於「影響未來的決策」。當前系統僅在生成文章，無法在架構或技術決策背景假設失效時（如團隊規模擴大），主動提醒用戶重新審視當初的決策。
+* **V3.5 設計**：
+  * 在專題文章與 Notion 任務庫中建立 **Decision Memory（決策記憶）** 區塊，用以結構化記錄技術決策的權衡背景：
+  ```json
+  {
+    "decision": "選擇 n8n 作為自動化工作流引擎，放棄 LangGraph",
+    "because": [
+      "低維護與營運成本",
+      "部署簡單且直觀",
+      "當前團隊非工程背景為主"
+    ],
+    "revisit_triggers": {
+      "team_size_exceeds": 5,
+      "workflow_count_exceeds": 50,
+      "time_interval_days": 180
+    }
+  }
+  ```
+  * **失效提醒 (Decision Expiration)**：背景任務會定期與 Notion 團隊及專案資料庫進行核對，當觸發器條件滿足（例如團隊人數突破 5 人）時，系統將在 Notion 任務資料庫中自動建立一筆「重啟評估決策：當初選擇 n8n 的假設已失效，是否重新評估 LangGraph？」的提醒，實現決策閉環。
+
+---
+
+## 5. 情境脈絡圖譜 (Context Graph)
+
+* **痛點**：觀點的對立往往不是是非對錯的問題，而是「適用情境（如團隊規模、技術棧、專案大小）的差異」。一味判定矛盾或整合會丟失情境脈絡。
+* **V3.8 設計**：
+  * 從「矛盾圖譜 (Contradiction Graph)」升級為 **「情境脈絡圖譜 (Context Graph)」**。
+  * **做法**：在 Fact 提取時，強制提取 Claim 所在的背景情境變數（如 `team_size`, `project_scale`, `tech_stack`）。
+  * **輸出對照**：當系統發現兩篇文獻的結論不同時，輸出 **`【情境差異對比】`**（例如：「文獻 A 在小團隊個人專案情境下推薦 n8n；而文獻 B 在企業級高併發系統下建議 LangGraph」），分析其適用邊界。
+
+---
+
+## 6. 雙軌新洞察驗證器 (Synthesis vs. Hypothesis)
+
+* **痛點**：防止 Validator 鼓勵 AI 進行邏輯大躍進的「漂亮胡說」。
+* **V3.5 設計**：
+  * 將 Validator 驗證通過的洞察拆分為 **雙軌輸出**，並在正文中明確標註：
+    * `【跨文獻綜合發現 (Synthesis)】`：多篇文獻客觀事實交叉印證後歸納出的客觀新觀點。
+    * `【研究假說 (Hypothesis)】`：基於文獻事實，經 AI 邏輯外推後得出、但尚未被本地文獻完全證實的合理推測。
+  * **硬性門檻**：如果一篇文章中既沒有 `Synthesis` 也沒有 `Hypothesis`，則直接降級為「基礎摘要」，不予生成專題文章。
+
+---
+
+## 🚀 Notion Agent 研發路線圖 (Roadmap)
+
+```mermaid
+gantt
+    title Notion Agent 決策知識管理系統升級路線圖
+    dateFormat  YYYY-MM-DD
+    section V3: 核心防禦 (必做)
+    TRS + QS 分離                :active, v3_1, 2026-06-01, 7d
+    Fact Layer (基本)           :active, v3_2, after v3_1, 7d
+    Devil Evidence            :active, v3_3, after v3_2, 5d
+    Insight Validator (基本)     :active, v3_4, after v3_3, 5d
+    
+    section V3.5: 決策與可解釋性 (優先)
+    Claim + Evidence 結構化儲存  :v35_1, after v3_4, 10d
+    Explainability Layer (解釋層):v35_2, after v35_1, 7d
+    Decision Memory (決策記憶)    :v35_3, after v35_2, 10d
+    
+    section V3.8: 情境與時間演進
+    Temporal Layer (Domain-Aware):v38_1, after v35_3, 7d
+    Context Graph (情境圖譜)      :v38_2, after v38_1, 10d
+    
+    section V4: 自主研究 (長期考慮)
+    Contradiction Graph          :v4_1, after v38_2, 14d
+    多 Agent 辯論機制             :v4_2, after v4_1, 15d
+    自動研究假說驗證器            :v4_3, after v4_2, 15d
+```
+
+* **V3 階段（核心防禦）**：TRS/QS 分流、基礎 Fact Layer、惡魔代言人與新洞察驗證，解決幻覺與不相關檢索問題。
+* **V3.5 階段（決策與解釋性）**：著重於可解釋性報告（為什麼選這篇）、資料血統追溯以及最關鍵的 **Decision Memory (決策記憶與失效提醒)**，讓系統具備引導與修正未來決策的能力。
+* **V3.8 階段（情境與時間演進）**：引入領域自適應時間衰減（避免歧視經典文獻）與 Context Graph（探討情境差異而非一味判斷對錯），讓系統具備深度的脈絡分析能力。
+* **V4 階段（自主研究）**：探索 Contradiction Graph 矛盾對比、多 Agent 自主辯論與研究假說的自動驗證機制。
