@@ -1,5 +1,5 @@
 # Notion Agent 知識彙整與專題撰寫策略架構
-本文件詳細說明多主題 RAG 彙整器 ([synthesize_knowledge.py](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/synthesize_knowledge.py)) 的底層設計策略、寫作邏輯與技術框架。
+本文件詳細說明多主題 RAG 彙整器 ([synthesize_knowledge.py](file:///c:/Users/etrny/.gemini/antigravity/scratch/notion-dkms/synthesize_knowledge.py)) 的底層設計策略、寫作邏輯與技術框架。
 
 ---
 
@@ -119,4 +119,4 @@ Notion 的 UUID 較長且包含連字符（如 `06d38af4-6d06-4ad6-a4c6-831809c9
 * **領域自適應時間衰減**：根據知識領域（如 AI vs. 心理學）動態調整時間衰減係數，避免自動歧視經典文獻。
 * **情境脈絡對比**：將單純的衝突對立升級為「情境脈絡圖譜 (Context Graph)」，探討不同情境下的適用條件而非一味判斷是非。
 
-詳細設計藍圖與架構演進對比，請參閱 [Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)：架構演進與設計藍圖](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/V3_ARCHITECTURE.md)。
+詳細設計藍圖與架構演進對比，請參閱 [Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)：架構演進與設計藍圖](file:///c:/Users/etrny/.gemini/antigravity/scratch/notion-dkms/V3_ARCHITECTURE.md)。
