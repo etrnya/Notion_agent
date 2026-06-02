@@ -122,16 +122,61 @@ NOTION_TASK_DATABASE_ID=your_task_database_id_here
 
 ---
 
-## 🚀 未來藍圖：Notion Agent V3 & V3.5 決策知識管理體系 (DKMS)
+## 🚀 Notion Agent V3.5/V3.8 決策知識管理體系 (DKMS) 全面落地
 
-針對當前 RAG 知識彙整系統面臨的關鍵盲點，本專案已設計了 **V3 & V3.5 決策知識管理體系 (Decision Knowledge Management System)** 架構藍圖。系統將從簡單的「收藏 -> 摘要」演進為協助決策的研究智能體，核心設計包括：
+本專案已全面實作 **決策知識管理體系 (DKMS, Decision Knowledge Management System)**，系統已從簡單的「收藏 -> 摘要」轉變為協助決策的研究智能體。核心架構與特點包括：
 
-1. **決策記憶與失效提醒 (Decision Memory)**：結構化記錄決策與其背景前提假設，在外部假設失效（如團隊擴大）時自動建立重審任務，引導未來決策。
-2. **可解釋性報告層 (Explainability Layer)**：每篇專題自動附帶選擇與淘汰文獻原因的報告，防止多層系統淪為無法 Debug 的黑箱。
-3. **資料血統追溯 (Data Lineage)**：在 Claim Pool 的 JSON 中記錄精確引文 (`evidence_quote`) 與物理位置 (`provenance`)，實現「觀點 -> 原始段落」的三級血統追溯。
-4. **領域自適應時間衰減 (Domain-Aware Freshness)**：根據學門特徵（如 AI 快速更迭 vs. 心理學經典常青）動態配置時間衰減係數，避免歧視經典文獻。
-5. **情境脈絡對比 (Context Graph)**：提取 Claims 所在的情境變數（如團隊規模、專案大小），輸出「情境對比」而非一味判斷是非對錯。
+### 1. 智慧品質過濾與分層抽樣 (Smart Sampling)
+針對擁有 3000+ 筆資料的大型知識庫，如果將所有文章傳給 LLM 會超過 Token 上限且破壞聚焦度。本系統設計了**智慧分層抽樣**機制：
+* **深受啟發優先**：主觀標記為「深受啟發」的文章擁有最高優先級，會優先保證全數納入（預設上限 60 篇）。
+* **分層比例抽樣**：其餘文章以 `QS` (Quality Score) 過濾後，按 AI 自動提取的標籤領域進行分層比例抽樣，維持跨領域的多元性。
+* **隨機打亂**：隨機化打亂素材排序送至 LLM，避免排列偏差影響主題聚類與合成。
+* **指令參數**：
+  ```bash
+  python synthesize_knowledge.py --max-source 2000 --sample-size 400 --min-qs 5.0
+  ```
 
-> 📖 **詳細架構與研發 Roadmap 請參閱**：
-> [Notion Agent V3 & V3.5 決策知識管理體系 (DKMS) 架構演進與設計藍圖](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/V3_ARCHITECTURE.md)
+### 2. 領域自適應時間衰減 (Domain-Aware Temporal Layer)
+* 避免一刀切的時間衰減（這會歧視常青文獻）。
+* 根據文章標籤自動對應不同的衰減係數 $\lambda$：
+  * **AI/LLM**: $\lambda = 0.80$ (衰減極快，時效性高)
+  * **軟體工程/架構**: $\lambda = 0.50$ (中等偏快)
+  * **管理/領導力**: $\lambda = 0.05$ (衰減極慢)
+  * **哲學/心理學**: $\lambda = 0.00$ (不衰減，常青經典)
+
+### 3. 事實提取層與資料血統追溯 (Fact Layer with Data Lineage)
+* 在主合成前，對每篇核心文獻提煉出含 `evidence_quote`、`evidence_type` (`fact`/`opinion`/`speculation`)、`confidence` 的結構化 Claims Pool (JSON)。
+* 確保每一句合成結論皆能上溯至資料庫的物理血統。
+
+### 4. 惡魔代言人批判思辨 (Devil's Advocate)
+* 引入批判性 LLM 機制，在彙整前針對主流觀點生成反對意見、落地痛點與失敗案例，並融入最終專題的 **`#### 反向觀點與不適用情境`** 區塊，防止回音室效應與盲目跟風。
+
+### 5. 可解釋性報告 (Explainability Layer)
+* 每篇專題文章開頭自動附帶「可解釋性報告」，列出本次核心文獻的篩選指標（TRS、QS、freshness、final_score），以及淘汰其他文獻的原因，讓系統完全透明可 Debug。
+
+### 6. 決策記憶與失效提醒 (Decision Memory)
+* 每篇專題文章底端附帶結構化的 **Decision Memory (決策記憶)** JSON 區塊，記錄決策的背景假設前提（`revisit_triggers`）。當外部假設失效時，系統可快速重審該決策。
+
+### 7. 任務與行動閉環 (Task DB Integration)
+* 自動解析專題文章末尾的 Action Items，自動於任務資料庫建立代辦任務（截止日期設為 7 天後），並建立 Relation 雙向關聯回專題彙整頁面。
+
+---
+
+## 🛠️ 環境配置與運行 (.env)
+
+確認 `.env` 檔案中已設定以下欄位：
+```ini
+NOTION_API_KEY=ntn_your_notion_token_here
+GEMINI_API_KEY=your_gemini_api_key_here
+NOTION_DATABASE_ID=your_database_id_here
+NOTION_TASK_DATABASE_ID=your_task_database_id_here
+USE_VERTEX_AI=true # 設定為 true 時使用 GCP Vertex AI 引擎，需要搭配 gcp-key.json；否則自動降級為一般 API Key
+```
+
+## 📖 系統化架構與設計文件
+詳細系統架構及撰寫策略，請參閱：
+* 📘 [DKMS V3.5 架構設計藍圖 (V3_ARCHITECTURE.md)](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/V3_ARCHITECTURE.md)
+* 📙 [知識彙整與專題撰寫策略 (WRITING_STRATEGY.md)](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/WRITING_STRATEGY.md)
+* 📗 [專案統一詞彙表 (GLOSSARY.md)](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/GLOSSARY.md)
+* 📓 [專案待辦與開發狀態記錄 (PENDING.md)](file:///c:/Users/etrny/.gemini/antigravity/scratch/Notion_agent/PENDING.md)
 

@@ -28,3 +28,14 @@
 - [x] **大型全庫提煉**
   - [x] 進行全庫 3304 筆的正式提煉（切換至 DeepSeek 引擎以避開 429 限制，改寫支援分頁自動迴圈處理，已於背景順利運行中）
 
+- [x] **V3 ~ V3.8 DKMS 架構整合 (2026-06-02)**
+  - [x] **Domain-Aware Temporal Layer (V3.8)**：新增 `DOMAIN_DECAY_MAP` 與 `compute_freshness_score()`，根據文章領域（AI/軟體工程/管理/哲學等）動態計算時間衰減係數
+  - [x] **TRS/QS 分離評分 (V3)**：QS（Quality Score = 原 RAG Score）與 TRS（Topic Relevance Score，以關鍵字命中率為啟發式代理）分離計算，Final Score = (0.7×TRS + 0.3×QS) × freshness
+  - [x] **Fact Layer / Claim Pool (V3.5)**：新增 `extract_claim_pool()`，對每篇核心文獻提取含 `evidence_quote`、`evidence_type`、`confidence` 的結構化 JSON 主張池
+  - [x] **Explainability Layer (V3.5)**：新增 `generate_explainability_report()`，每篇專題自動在文章開頭附帶選中與淘汰文獻的可解釋性報告（含 TRS、freshness、final_score、reject_reason）
+  - [x] **Decision Memory (V3.5)**：新增 `generate_decision_memory()`，在文章末尾生成含 `decision`、`because`、`revisit_triggers` 的決策記憶 JSON 區塊
+  - [x] **Context Graph / 情境脈絡對比 (V3.8)**：在 `ask_llm()` prompt 中強制要求 LLM 在發現文獻結論情境差異時輸出 `⚖️ 【情境差異對比 (Context Graph)】` 而非是非判斷
+  - [x] **Synthesis/Hypothesis 雙軌輸出 (V3.5)**：在 `ask_llm()` prompt 中強制要求 LLM 區分並輸出 `💡 【跨文獻綜合發現 (Synthesis)】` 與 `🔮 【研究假說 (Hypothesis)】`
+
+## 🧪 測試結果
+- [x] 執行 `python synthesize_knowledge.py --count 1` 進行端對端整合測試，確認 Fact Layer、Explainability Report、Decision Memory、Task DB 寫入與智慧分層抽樣皆已正常運作且寫回 Notion 成功。

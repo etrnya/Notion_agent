@@ -9,14 +9,17 @@
 | 中文名稱 | 英文名稱 | 代碼變數名 | 說明 |
 | :--- | :--- | :--- | :--- |
 | Notion 整合令牌 | Notion Integration Token | `NOTION_API_KEY` | 用於訪問 Notion API 的 Internal Integration Token (例如 `ntn_...`) |
-| OpenAI API 金鑰 | OpenAI API Key | `OPENAI_API_KEY` | 用於大語言模型推理的 API Key (例如 `sk-proj-...`) |
-| 網路文章資料庫 ID | Notion Database ID | `NOTION_DATABASE_ID` | 網路文章影片筆記資料庫的 UUID 標識符 |
-| 預設操作頁面 ID | Notion Page ID | `NOTION_PAGE_ID` | 互動式 Agent 預設綁定的 Notion 頁面識別碼 |
+| Gemini API 金鑰 | Gemini API Key | `GEMINI_API_KEY` | 用於 Google AI Studio Gemini API 的金鑰 |
+| 網路文章資料來源 ID | Notion Source Data Source ID | `NOTION_SOURCE_DS` / `--source-ds` | 網路文章影片筆記資料來源的 UUID 識別碼 |
+| 目標專題資料庫 ID | Notion Destination DB ID | `NOTION_DEST_DB` / `--dest-db` | 存放提煉後專題長文的 Notion 資料庫 UUID 識別碼 |
+| 任務管理資料庫 ID | Notion Task Database ID | `NOTION_TASK_DATABASE_ID` | AI 待辦任務資料庫的 UUID 識別碼（用作行動閉環） |
+| 啟用 Vertex AI 旗標 | Use Vertex AI Flag | `USE_VERTEX_AI` | 是否啟用 GCP Vertex AI 引擎旗標 (`true` / `false`) |
 
 ---
 
 ## 🗃️ Notion 資料庫屬性對照 (Database Properties)
 
+### 1. 來源知識庫屬性 (Source Database)
 | 欄位中文名稱 | 欄位英文名稱 | Notion 屬性型態 | 變數/屬性 Key | 說明 |
 | :--- | :--- | :--- | :--- | :--- |
 | AI 已處理 | AI Processed | Checkbox | `AI_PROCESSED` | 標記該筆文章是否已經過 AI 處理，防止重複處理 |
@@ -24,8 +27,17 @@
 | AI 標籤 | AI Tags | Multi-select | `AI_TAGS` | 存放 AI 自動分類提取的文章主題標籤 |
 | 可信度 | Credibility | Number | `credibility` | AI 自動估計該文章的客觀真實與可靠度 (1-10 分) |
 | 可執行性 | Actionability | Number | `actionability` | AI 自動估計該文章的實作步驟、代碼或流程指引具體度 (1-10 分) |
+| 深受啟發 | Inspired | Select | `深受啟發` | 主觀標記為 "深受啟發" 的文章（優先納入 RAG 與抽樣素材池） |
 | 知識新鮮度 | Knowledge Freshness | Select | `知識新鮮度` | 定義知識有效期限級別 (A級:長青/B級:一年/C級:半年/D級:三個月) |
 | 最後驗證時間 | Last Verified Time | Date | `最後驗證時間` | 上次進行 URL 探測或時效人工/AI 驗證的日期 |
+
+### 2. 任務/待辦資料庫屬性 (Task Database)
+| 欄位中文名稱 | 欄位英文名稱 | Notion 屬性型態 | 變數/屬性 Key | 說明 |
+| :--- | :--- | :--- | :--- | :--- |
+| 名稱 | Name | Title | `名稱` | 待辦任務名稱（例如：學習/實踐某行動項目） |
+| 狀態 | Status | Status | `狀態` | 任務的執行狀態（預設設為 `Not started` / `未開始`） |
+| 截止日期 | Due Date | Date | `截止日期` | 任務截止日期（預設為建立日 + 7 天） |
+| 專題文章關聯 | Related Thematic Page | Relation | `專題文章` 等關聯屬性 | 關聯回目標專題彙整頁面的 Relation 屬性 |
 
 ---
 
